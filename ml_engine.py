@@ -7,8 +7,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import joblib
 import os
+import base64
+from io import BytesIO
 from datetime import datetime
-from database import get_session, Trade, ModelPerformance, IndicatorPerformance
+from database import get_session, Trade, ModelPerformance, IndicatorPerformance, MLModel
 
 class MLTradingEngine:
     def __init__(self):
@@ -16,7 +18,6 @@ class MLTradingEngine:
         self.xgb_model = None
         self.scaler = StandardScaler()
         self.feature_columns = []
-        self.model_dir = 'models'
         
         self.indicator_weights = {
             'RSI': 2.0,
@@ -27,9 +28,6 @@ class MLTradingEngine:
             'CCI': 1.0,
             'SMA': 1.0
         }
-        
-        if not os.path.exists(self.model_dir):
-            os.makedirs(self.model_dir)
         
         self._load_indicator_weights()
     
@@ -229,13 +227,19 @@ class MLTradingEngine:
                 self.xgb_model = None
                 self.scaler = StandardScaler()  # Fresh scaler for retraining with new features
                 
-                # Delete old model files
-                import os
-                for file in ['rf_model.pkl', 'xgb_model.pkl', 'scaler.pkl']:
-                    filepath = f'{self.model_dir}/{file}'
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-                        print(f"   Deleted outdated model: {file}")
+                # Delete outdated models from database
+                try:
+                    session = get_session()
+                    deleted_count = session.query(MLModel).delete()
+                    session.commit()
+                    session.close()
+                    if deleted_count > 0:
+                        print(f"   ✅ Deleted {deleted_count} outdated models from database")
+                except Exception as e:
+                    print(f"   ⚠️  Error deleting outdated models: {e}")
+                    if 'session' in locals():
+                        session.rollback()
+                        session.close()
                 
                 return rule_based_result
             
@@ -310,24 +314,72 @@ class MLTradingEngine:
     
     def _save_models(self):
         try:
-            joblib.dump(self.rf_model, f'{self.model_dir}/rf_model.pkl')
-            joblib.dump(self.xgb_model, f'{self.model_dir}/xgb_model.pkl')
-            joblib.dump(self.scaler, f'{self.model_dir}/scaler.pkl')
-            print("Models saved successfully")
+            session = get_session()
+            
+            def serialize_model(model):
+                buffer = BytesIO()
+                joblib.dump(model, buffer)
+                buffer.seek(0)
+                return base64.b64encode(buffer.read()).decode('utf-8')
+            
+            rf_data = serialize_model(self.rf_model)
+            xgb_data = serialize_model(self.xgb_model)
+            scaler_data = serialize_model(self.scaler)
+            
+            for model_name, model_data in [
+                ('rf_model', rf_data),
+                ('xgb_model', xgb_data),
+                ('scaler', scaler_data)
+            ]:
+                existing = session.query(MLModel).filter(MLModel.model_name == model_name).first()
+                if existing:
+                    existing.model_data = model_data
+                    existing.updated_at = datetime.utcnow()
+                    existing.version += 1
+                else:
+                    new_model = MLModel(
+                        model_name=model_name,
+                        model_data=model_data
+                    )
+                    session.add(new_model)
+            
+            session.commit()
+            session.close()
+            print("✅ Models saved to database successfully")
         except Exception as e:
-            print(f"Error saving models: {e}")
+            print(f"❌ Error saving models to database: {e}")
+            if 'session' in locals():
+                session.rollback()
+                session.close()
     
     def _load_models(self):
         try:
-            if os.path.exists(f'{self.model_dir}/rf_model.pkl'):
-                self.rf_model = joblib.load(f'{self.model_dir}/rf_model.pkl')
-                self.xgb_model = joblib.load(f'{self.model_dir}/xgb_model.pkl')
-                self.scaler = joblib.load(f'{self.model_dir}/scaler.pkl')
-                print("Models loaded successfully")
+            session = get_session()
+            
+            def deserialize_model(model_data):
+                decoded = base64.b64decode(model_data.encode('utf-8'))
+                buffer = BytesIO(decoded)
+                return joblib.load(buffer)
+            
+            rf_record = session.query(MLModel).filter(MLModel.model_name == 'rf_model').first()
+            xgb_record = session.query(MLModel).filter(MLModel.model_name == 'xgb_model').first()
+            scaler_record = session.query(MLModel).filter(MLModel.model_name == 'scaler').first()
+            
+            session.close()
+            
+            if rf_record and xgb_record and scaler_record:
+                self.rf_model = deserialize_model(rf_record.model_data)
+                self.xgb_model = deserialize_model(xgb_record.model_data)
+                self.scaler = deserialize_model(scaler_record.model_data)
+                print(f"✅ Models loaded from database (version: {rf_record.version})")
                 return True
-            return False
+            else:
+                print("⚠️  No models found in database")
+                return False
         except Exception as e:
-            print(f"Error loading models: {e}")
+            print(f"❌ Error loading models from database: {e}")
+            if 'session' in locals():
+                session.close()
             return False
     
     def _rule_based_prediction(self, indicators):
