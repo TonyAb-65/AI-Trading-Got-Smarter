@@ -1,0 +1,1682 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import os
+import pytz
+
+from database import init_db, get_session, Trade, ActivePosition, ModelPerformance
+from api_integrations import get_market_data_unified, get_current_price, OKXClient
+from technical_indicators import TechnicalIndicators, calculate_support_resistance
+from whale_tracker import WhaleTracker
+from ml_engine import MLTradingEngine
+from position_monitor import PositionMonitor
+from scheduler import get_scheduler
+from divergence_logger import log_divergences_from_context
+from divergence_analytics import get_divergence_timing_info
+
+st.set_page_config(
+    page_title="AI Trading Platform",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+@st.cache_resource
+def initialize_database():
+    init_db()
+
+@st.cache_resource
+def start_background_scheduler():
+    scheduler = get_scheduler()
+    scheduler.start()
+    return scheduler
+
+initialize_database()
+start_background_scheduler()
+
+CRYPTO_PAIRS = [
+    'BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD', 'ADA/USD',
+    'DOGE/USD', 'MATIC/USD', 'DOT/USD', 'AVAX/USD', 'LINK/USD'
+]
+
+FOREX_PAIRS = [
+    'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD',
+    'USD/CAD', 'NZD/USD'
+]
+
+METALS = [
+    'XAU/USD', 'XAG/USD', 'XPT/USD', 'XPD/USD'
+]
+
+# Riyadh Timezone (GMT+3)
+RIYADH_TZ = pytz.timezone('Asia/Riyadh')
+
+def format_price(price):
+    """
+    Smart price formatting based on value:
+    - Prices < $1: 5 decimals (e.g., $0.55495)
+    - Prices $1-$10: 4 decimals (e.g., $5.5549)
+    - Prices >= $10: 2 decimals (e.g., $45,234.50)
+    """
+    if price is None:
+        return "N/A"
+    
+    if price < 1:
+        return f"${price:,.5f}"
+    elif price < 10:
+        return f"${price:,.4f}"
+    else:
+        return f"${price:,.2f}"
+
+def check_global_alerts():
+    """Check all active positions for HIGH severity alerts"""
+    try:
+        monitor = PositionMonitor()
+        results = monitor.check_active_positions()
+        
+        high_alerts = []
+        for result in results:
+            if result.get('status') == 'success' and result.get('monitoring_alerts'):
+                for alert in result['monitoring_alerts']:
+                    if alert.get('severity') == 'HIGH':
+                        high_alerts.append({
+                            'symbol': result['symbol'],
+                            'message': alert['message'],
+                            'recommendation': result['recommendation']
+                        })
+        
+        return high_alerts
+    except Exception as e:
+        return []
+
+def convert_to_riyadh_time(utc_dt):
+    """Convert UTC datetime to Riyadh time (GMT+3)"""
+    if utc_dt is None:
+        return None
+    
+    # If datetime is naive (no timezone), assume it's UTC
+    if utc_dt.tzinfo is None:
+        utc_dt = pytz.utc.localize(utc_dt)
+    
+    # Convert to Riyadh time
+    riyadh_dt = utc_dt.astimezone(RIYADH_TZ)
+    return riyadh_dt
+
+def check_api_keys():
+    twelve_data_key = os.getenv('TWELVE_DATA_API_KEY')
+    okx_key = os.getenv('OKX_API_KEY')
+    
+    if not twelve_data_key:
+        st.error("⚠️ TWELVE_DATA_API_KEY is required for the platform to work!")
+        with st.expander("🔑 How to add your Twelve Data API key"):
+            st.write("""
+            **Twelve Data provides ALL market data (Crypto, Forex, Metals)**
+            
+            1. Sign up at https://twelvedata.com/ (FREE account)
+            2. Copy your API key from the dashboard
+            3. In Replit, click the 🔒 Secrets tab (lock icon on left sidebar)
+            4. Click "New Secret"
+            5. Key: `TWELVE_DATA_API_KEY`
+            6. Value: [paste your API key]
+            7. Refresh this page
+            
+            **Free tier includes:**
+            - 800 API calls per day
+            - All crypto pairs (BTC, ETH, etc.)
+            - All forex pairs (EUR/USD, GBP/USD, etc.)
+            - Precious metals (Gold, Silver, etc.)
+            """)
+        return False
+    
+    st.success("✅ Twelve Data API key configured - All markets available!")
+    if not okx_key:
+        st.info("💡 Optional: Add OKX_API_KEY for orderbook data and whale tracking on crypto")
+    
+    return True
+
+def convert_to_heikin_ashi(df):
+    """Convert regular OHLC data to Heikin-Ashi candles for clearer trend visualization"""
+    ha_df = df.copy()
+    
+    # Calculate Heikin-Ashi values
+    ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+    ha_open = df['open'].copy()
+    
+    # First HA Open = (first Open + first Close) / 2
+    ha_open.iloc[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
+    
+    # Calculate HA Open (average of previous HA Open and HA Close)
+    for i in range(1, len(df)):
+        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
+    
+    ha_high = df[['high', 'open', 'close']].max(axis=1)
+    ha_low = df[['low', 'open', 'close']].min(axis=1)
+    
+    # Apply HA High/Low using HA Open and HA Close
+    for i in range(len(df)):
+        ha_high.iloc[i] = max(df['high'].iloc[i], ha_open.iloc[i], ha_close.iloc[i])
+        ha_low.iloc[i] = min(df['low'].iloc[i], ha_open.iloc[i], ha_close.iloc[i])
+    
+    ha_df['open'] = ha_open
+    ha_df['high'] = ha_high
+    ha_df['low'] = ha_low
+    ha_df['close'] = ha_close
+    
+    return ha_df
+
+def plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels):
+    # Convert to Heikin-Ashi candles for clearer trend visualization
+    ha_df = convert_to_heikin_ashi(df)
+    
+    fig = make_subplots(
+        rows=4, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.5, 0.15, 0.15, 0.15],
+        subplot_titles=(f'{symbol} Price Action (Heikin-Ashi)', 'RSI', 'MACD', 'Volume')
+    )
+    
+    fig.add_trace(
+        go.Candlestick(
+            x=ha_df['timestamp'],
+            open=ha_df['open'],
+            high=ha_df['high'],
+            low=ha_df['low'],
+            close=ha_df['close'],
+            name='HA Price'
+        ),
+        row=1, col=1
+    )
+    
+    if 'SMA_20' in indicators_df.columns:
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['SMA_20'],
+                      name='SMA 20', line=dict(color='orange', width=1)),
+            row=1, col=1
+        )
+    
+    if 'SMA_50' in indicators_df.columns:
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['SMA_50'],
+                      name='SMA 50', line=dict(color='blue', width=1)),
+            row=1, col=1
+        )
+    
+    if 'EMA_12' in indicators_df.columns:
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['EMA_12'],
+                      name='EMA 12', line=dict(color='green', width=1, dash='dash')),
+            row=1, col=1
+        )
+    
+    if 'BB_upper' in indicators_df.columns:
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['BB_upper'],
+                      name='BB Upper', line=dict(color='gray', width=1, dash='dot')),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['BB_lower'],
+                      name='BB Lower', line=dict(color='gray', width=1, dash='dot'),
+                      fill='tonexty', fillcolor='rgba(128,128,128,0.1)'),
+            row=1, col=1
+        )
+    
+    for level in support_levels:
+        fig.add_hline(y=level, line_dash="dash", line_color="green", 
+                     annotation_text=f"S: {level}", row=1, col=1)
+    
+    for level in resistance_levels:
+        fig.add_hline(y=level, line_dash="dash", line_color="red",
+                     annotation_text=f"R: {level}", row=1, col=1)
+    
+    if 'RSI' in indicators_df.columns:
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['RSI'],
+                      name='RSI', line=dict(color='purple', width=2)),
+            row=2, col=1
+        )
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+    
+    if 'MACD' in indicators_df.columns:
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['MACD'],
+                      name='MACD', line=dict(color='blue', width=2)),
+            row=3, col=1
+        )
+    if 'MACD_signal' in indicators_df.columns:
+        fig.add_trace(
+            go.Scatter(x=indicators_df['timestamp'], y=indicators_df['MACD_signal'],
+                      name='Signal', line=dict(color='orange', width=2)),
+            row=3, col=1
+        )
+    if 'MACD_hist' in indicators_df.columns:
+        colors = ['green' if val >= 0 else 'red' for val in indicators_df['MACD_hist']]
+        fig.add_trace(
+            go.Bar(x=indicators_df['timestamp'], y=indicators_df['MACD_hist'],
+                  name='Histogram', marker_color=colors),
+            row=3, col=1
+        )
+    
+    fig.add_trace(
+        go.Bar(x=df['timestamp'], y=df['volume'], name='Volume',
+              marker_color='lightblue'),
+        row=4, col=1
+    )
+    
+    fig.update_layout(
+        height=1000,
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        hovermode='x unified'
+    )
+    
+    return fig
+
+st.title("📈 AI-Powered Trading Analysis Platform")
+st.markdown("**Real-time Market Analysis | ML Predictions | Position Monitoring**")
+
+check_api_keys()
+
+menu = st.sidebar.selectbox(
+    "Navigation",
+    ["Market Analysis", "Trading Signals", "Position Tracker", "Risk Calculator", "Performance Analytics", "Model Training"]
+)
+
+# GLOBAL ALERT BANNER - Shows HIGH severity warnings on all tabs
+global_alerts = check_global_alerts()
+if global_alerts:
+    for alert in global_alerts:
+        st.error(f"🚨 **CRITICAL ALERT: {alert['symbol']}** - {alert['message']}")
+        if menu != "Position Tracker":
+            st.info("👉 Go to **Position Tracker** tab to view details and take action")
+    st.divider()
+
+if menu == "Market Analysis":
+    st.header("📊 Market Analysis Dashboard")
+    
+    # ML Learning Explanation
+    with st.expander("🧠 **How ML Learning Improves Predictions**", expanded=False):
+        st.write("""
+        **The AI continuously learns from your trading results:**
+        
+        1. **Individual Learning** (After Every Trade):
+           - When you close a trade, the system immediately updates indicator weights
+           - Winning trades → indicators get stronger influence
+           - Losing trades → indicators get weaker influence
+           
+        2. **Bulk Retraining** (Every 10 Trades):
+           - At 10, 20, 30, 40... trades, ML models retrain on ALL your historical data
+           - Models learn patterns from both wins AND losses
+           - Training uses 80% data for learning, 20% for validation
+           
+        3. **Applied to Market Analysis**:
+           - Trained models analyze current market conditions
+           - ML prediction combines with rule-based technical indicators
+           - Higher model confidence = stronger buy/sell signals
+           - System shows "ML Confidence: 65%" to indicate prediction strength
+           
+        **Example:** After 30 trades, if RSI consistently led to wins but MACD led to losses,
+        the system will trust RSI more and reduce MACD's influence in future predictions.
+        
+        This is why accuracy improves over time - the AI learns YOUR trading style!
+        """)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        market_type = st.selectbox("Market Type", ["crypto", "forex", "metals", "custom"])
+    
+    with col2:
+        if market_type == "crypto":
+            symbol = st.selectbox("Select Pair", CRYPTO_PAIRS)
+        elif market_type == "forex":
+            symbol = st.selectbox("Select Pair", FOREX_PAIRS)
+        elif market_type == "metals":
+            symbol = st.selectbox("Select Metal", METALS)
+        else:  # custom
+            symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", placeholder="BTC/USD").upper()
+    
+    with col3:
+        timeframe = st.selectbox("Timeframe", ["5m", "15m", "30m", "1H", "4H", "1D"])
+    
+    if st.button("Analyze Market", type="primary"):
+        if not symbol or symbol.strip() == "":
+            st.error("❌ Please enter a trading pair symbol")
+            st.stop()
+        
+        # Map 'custom' to 'forex' for API compatibility (Twelve Data treats most symbols as forex pairs)
+        api_market_type = "forex" if market_type == "custom" else market_type
+        
+        with st.spinner("Fetching market data..."):
+            try:
+                df = get_market_data_unified(symbol, api_market_type, timeframe, 100)
+                
+                if df is None:
+                    st.error(f"❌ Failed to fetch data for {symbol} on {timeframe} timeframe. API may have returned an error.")
+                    st.info("💡 Try a different timeframe or check if your API key is valid")
+                    st.stop()
+                    
+                if len(df) == 0:
+                    st.error(f"❌ No data available for {symbol}")
+                    st.stop()
+            except Exception as e:
+                st.error(f"❌ Error fetching data: {str(e)}")
+                st.stop()
+            
+            if df is not None and len(df) > 0:
+                tech = TechnicalIndicators(df)
+                indicators_df = tech.calculate_all_indicators()
+                latest_indicators = tech.get_latest_indicators()
+                signals = tech.get_trend_signals()
+                
+                # Get historical trend context for duration/slope/divergence analysis
+                trend_context = tech.get_trend_context(symbol, api_market_type)
+                latest_indicators['trend_context'] = trend_context
+                
+                support_levels, resistance_levels = calculate_support_resistance(indicators_df)
+                
+                st.success(f"✅ Analysis complete for {symbol}")
+                
+                col1, col2, col3, col4, col5 = st.columns(5)
+                current_price = latest_indicators.get('current_price', 0)
+                
+                with col1:
+                    st.metric("Current Price", format_price(current_price))
+                with col2:
+                    rsi = latest_indicators.get('RSI')
+                    st.metric("RSI", f"{rsi:.1f}" if rsi else "N/A")
+                with col3:
+                    adx = latest_indicators.get('ADX')
+                    st.metric("ADX", f"{adx:.1f}" if adx else "N/A")
+                with col4:
+                    mfi = latest_indicators.get('MFI')
+                    st.metric("MFI", f"{mfi:.1f}" if mfi else "N/A")
+                with col5:
+                    obv = latest_indicators.get('OBV')
+                    if obv is not None:
+                        obv_formatted = f"{obv:,.0f}" if abs(obv) > 1000 else f"{obv:.2f}"
+                        st.metric("OBV", obv_formatted)
+                    else:
+                        st.metric("OBV", "N/A")
+                
+                st.plotly_chart(
+                    plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels),
+                    use_container_width=True
+                )
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.subheader("Technical Signals")
+                    for indicator, signal in signals.items():
+                        color = "🟢" if signal in ['bullish', 'oversold', 'strong_uptrend'] else "🔴" if signal in ['bearish', 'overbought', 'strong_downtrend'] else "🟡"
+                        
+                        # Show raw values for ADX for transparency
+                        if indicator == 'ADX':
+                            adx_val = latest_indicators.get('ADX', 0)
+                            di_plus = latest_indicators.get('DI_plus', 0)
+                            di_minus = latest_indicators.get('DI_minus', 0)
+                            st.write(f"{color} **{indicator}**: {signal}")
+                            st.caption(f"   ADX: {adx_val:.1f} | +DI: {di_plus:.1f} | -DI: {di_minus:.1f}")
+                        else:
+                            st.write(f"{color} **{indicator}**: {signal}")
+                    
+                    st.divider()
+                    st.subheader("🧠 Smart Money (OBV)")
+                    obv_ctx = trend_context.get('OBV', {})
+                    obv_slope = obv_ctx.get('slope', 0.0)
+                    obv_divergence = obv_ctx.get('divergence', 'none')
+                    
+                    if obv_divergence == 'bullish':
+                        st.write("🟢 **Bullish Divergence** - Smart money accumulating")
+                        st.caption(f"   Slope: {obv_slope:+.2f} (Price down, volume up)")
+                        
+                        # Show timing intelligence
+                        timing_info = get_divergence_timing_info('OBV', timeframe, 'bullish')
+                        if timing_info:
+                            st.info(f"⏱️ **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
+                    elif obv_divergence == 'bearish':
+                        st.write("🔴 **Bearish Divergence** - Smart money distributing")
+                        st.caption(f"   Slope: {obv_slope:+.2f} (Price up, volume down)")
+                        
+                        # Show timing intelligence
+                        timing_info = get_divergence_timing_info('OBV', timeframe, 'bearish')
+                        if timing_info:
+                            speed_emoji = "⚠️" if timing_info['speed_class'] == 'fast' else "✅" if timing_info['speed_class'] == 'actionable' else "⏱️"
+                            st.info(f"{speed_emoji} **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
+                    else:
+                        slope_direction = "Rising" if obv_slope > 0.5 else "Falling" if obv_slope < -0.5 else "Flat"
+                        slope_color = "🟢" if obv_slope > 0.5 else "🔴" if obv_slope < -0.5 else "🟡"
+                        st.write(f"{slope_color} **{slope_direction}** - No divergence")
+                        st.caption(f"   Slope: {obv_slope:+.2f}")
+                
+                with col2:
+                    st.subheader("Candlestick Patterns")
+                    patterns = tech.detect_candlestick_patterns()
+                    if patterns:
+                        for pattern_name, signal in patterns.items():
+                            if signal == 'bullish':
+                                st.write(f"🟢 **{pattern_name.replace('_', ' ')}** (Bullish)")
+                            elif signal == 'bearish':
+                                st.write(f"🔴 **{pattern_name.replace('_', ' ')}** (Bearish)")
+                            else:
+                                st.write(f"🟡 **{pattern_name.replace('_', ' ')}** (Neutral)")
+                    else:
+                        st.info("No patterns detected")
+                
+                with col3:
+                    st.subheader("Support & Resistance")
+                    st.write("**Resistance Levels:**")
+                    for r in resistance_levels:
+                        st.write(f"🔴 {format_price(r)}")
+                    st.write("**Support Levels:**")
+                    for s in support_levels:
+                        st.write(f"🟢 {format_price(s)}")
+                
+                if market_type == "crypto":
+                    st.subheader("🐋 Whale & Smart Money Analysis")
+                    okx_client = OKXClient(api_key=os.getenv('OKX_API_KEY'))
+                    orderbook = okx_client.get_orderbook(symbol)
+                    
+                    whale_tracker = WhaleTracker(indicators_df, orderbook)
+                    whale_movements = whale_tracker.detect_whale_movements()
+                    smart_money = whale_tracker.detect_smart_money()
+                    volume_profile = whale_tracker.get_volume_profile()
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if whale_movements:
+                            st.write("**Recent Whale Activity:**")
+                            for movement in whale_movements[:5]:
+                                st.write(f"{movement['transaction_type']} - Impact Score: {movement['impact_score']:.1f}")
+                        else:
+                            st.info("No significant whale activity detected")
+                    
+                    with col2:
+                        if smart_money:
+                            st.write("**Smart Money Signals:**")
+                            for signal in smart_money:
+                                st.write(f"• {signal['description']} (Confidence: {signal['confidence']})")
+                        else:
+                            st.info("No smart money signals detected")
+                    
+                    if volume_profile:
+                        st.write(f"**Volume Profile:** Current: {volume_profile['current_volume']:,.0f} | Avg: {volume_profile['average_volume']:,.0f} | {volume_profile['volume_vs_avg']:.0f}% of average")
+                
+                st.divider()
+                st.subheader("🤖 AI Trading Recommendation")
+                
+                with st.spinner("Generating AI recommendation..."):
+                    ml_engine = MLTradingEngine()
+                    prediction = ml_engine.predict(latest_indicators)
+                    
+                    # Log divergences for timing intelligence (no logic change)
+                    try:
+                        if 'trend_context' in latest_indicators:
+                            current_price = latest_indicators.get('close', 0)
+                            log_divergences_from_context(symbol, timeframe, latest_indicators['trend_context'], current_price)
+                    except Exception as e:
+                        print(f"Divergence logging failed: {e}")
+                    
+                    st.session_state['last_prediction'] = prediction
+                    st.session_state['last_symbol'] = symbol
+                    st.session_state['last_market_type'] = api_market_type  # Store the API-compatible market type
+                    st.session_state['last_timeframe'] = timeframe
+                    st.session_state['last_indicators'] = latest_indicators
+                    
+                    # Pre-fill form fields with predicted values
+                    if prediction.get('entry_price'):
+                        st.session_state['manual_entry_price'] = float(prediction['entry_price'])
+                        st.session_state['manual_sl'] = float(prediction.get('stop_loss', 0.0))
+                        st.session_state['manual_tp'] = float(prediction.get('take_profit', 0.0))
+                    else:
+                        # Clear stale values for HOLD predictions
+                        if 'manual_entry_price' in st.session_state:
+                            del st.session_state['manual_entry_price']
+                        if 'manual_sl' in st.session_state:
+                            del st.session_state['manual_sl']
+                        if 'manual_tp' in st.session_state:
+                            del st.session_state['manual_tp']
+                    
+                    if prediction['signal'] == 'LONG':
+                        st.success(f"📈 **LONG** - Confidence: {prediction['confidence']:.1f}%")
+                    elif prediction['signal'] == 'SHORT':
+                        st.error(f"📉 **SHORT** - Confidence: {prediction['confidence']:.1f}%")
+                    else:
+                        st.warning(f"⏸️ **HOLD** - Confidence: {prediction['confidence']:.1f}%")
+                    
+                    if prediction['entry_price'] is not None:
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Entry Price", format_price(prediction['entry_price']))
+                        with col2:
+                            st.metric("Stop Loss", format_price(prediction['stop_loss']))
+                        with col3:
+                            st.metric("Take Profit", format_price(prediction['take_profit']))
+                    else:
+                        st.info(prediction.get('recommendation', 'Insufficient data for prediction. Models not trained yet.'))
+                    
+                    if 'reasons' in prediction and prediction['reasons']:
+                        st.write("**Why this recommendation?**")
+                        for reason in prediction['reasons']:
+                            st.write(f"• {reason}")
+                    
+    
+    if 'last_prediction' in st.session_state and st.session_state['last_prediction']:
+        prediction = st.session_state['last_prediction']
+        symbol = st.session_state.get('last_symbol', '')
+        market_type = st.session_state.get('last_market_type', 'crypto')
+        timeframe = st.session_state.get('last_timeframe', '1H')
+        indicators = st.session_state.get('last_indicators', None)
+        
+        # Allow manual position tracking even when AI says HOLD
+        st.divider()
+        st.write("**💡 Want to track a position?**")
+        
+        col1, col2, col3 = st.columns([2, 2, 2])
+        
+        with col1:
+            manual_direction = st.selectbox(
+                "Trade Direction",
+                ["LONG", "SHORT"],
+                key="manual_direction",
+                index=0 if prediction['signal'] == 'LONG' else (1 if prediction['signal'] == 'SHORT' else 0)
+            )
+        
+        with col2:
+            manual_entry = st.number_input(
+                "Entry Price",
+                min_value=0.0,
+                value=float(prediction.get('entry_price', 0.0)) if prediction.get('entry_price') else 0.0,
+                step=0.01,
+                key="manual_entry_price"
+            )
+        
+        with col3:
+            trade_quantity = st.number_input(
+                "Quantity (optional)", 
+                min_value=0.0, 
+                step=0.01,
+                key="market_analysis_qty",
+                help="Enter trade size"
+            )
+        
+        col1, col2 = st.columns([2, 2])
+        
+        with col1:
+            manual_sl = st.number_input(
+                "Stop Loss",
+                min_value=0.0,
+                value=float(prediction.get('stop_loss', 0.0)) if prediction.get('stop_loss') else 0.0,
+                step=0.01,
+                key="manual_sl"
+            )
+        
+        with col2:
+            manual_tp = st.number_input(
+                "Take Profit (optional)",
+                min_value=0.0,
+                value=float(prediction.get('take_profit', 0.0)) if prediction.get('take_profit') else 0.0,
+                step=0.01,
+                key="manual_tp"
+            )
+        
+        if prediction['signal'] == 'HOLD':
+            st.warning("⚠️ AI recommends HOLD - You're entering a manual position")
+        
+        if st.button("📊 Track This Position", type="primary", key="take_trade_market"):
+            if manual_entry <= 0:
+                st.error("❌ Please enter a valid entry price")
+            else:
+                monitor = PositionMonitor()
+                result = monitor.add_position(
+                    symbol,
+                    market_type,
+                    manual_direction,
+                    manual_entry,
+                    quantity=trade_quantity if trade_quantity > 0 else None,
+                    stop_loss=manual_sl if manual_sl > 0 else None,
+                    take_profit=manual_tp if manual_tp > 0 else None,
+                    timeframe=timeframe,
+                    indicators=indicators
+                )
+                
+                if result['success']:
+                    st.success(f"✅ {result['message']}")
+                    st.success(f"🎯 Position added: {symbol} {manual_direction} @ {format_price(manual_entry)}")
+                    st.info("📍 Go to 'Position Tracker' to view and manage this position")
+                    del st.session_state['last_prediction']
+                    del st.session_state['last_symbol']
+                    del st.session_state['last_market_type']
+                    del st.session_state['last_timeframe']
+                    if 'last_indicators' in st.session_state:
+                        del st.session_state['last_indicators']
+                    st.rerun()
+                else:
+                    st.error(f"❌ {result['message']}")
+
+elif menu == "Trading Signals":
+    st.header("🎯 Quick Signal Lookup")
+    st.info("💡 Tip: Use 'Market Analysis' for full chart analysis + AI recommendation. This is for quick signal lookups only.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        market_type = st.selectbox("Market Type", ["crypto", "forex", "metals", "custom"], key="signal_market")
+    
+    with col2:
+        if market_type == "crypto":
+            symbol = st.selectbox("Select Pair", CRYPTO_PAIRS, key="signal_symbol")
+        elif market_type == "forex":
+            symbol = st.selectbox("Select Pair", FOREX_PAIRS, key="signal_symbol")
+        elif market_type == "metals":
+            symbol = st.selectbox("Select Metal", METALS, key="signal_symbol")
+        else:  # custom
+            symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", placeholder="BTC/USD", key="signal_symbol_custom").upper()
+    
+    if st.button("Get AI Recommendation", type="primary"):
+        if not symbol or symbol.strip() == "":
+            st.error("❌ Please enter a trading pair symbol")
+            st.stop()
+        
+        # Map 'custom' to 'forex' for API compatibility (Twelve Data treats most symbols as forex pairs)
+        api_market_type = "forex" if market_type == "custom" else market_type
+        
+        with st.spinner("Analyzing with AI models..."):
+            df = get_market_data_unified(symbol, api_market_type, '1H', 100)
+            
+            if df is not None and len(df) > 0:
+                tech = TechnicalIndicators(df)
+                tech.calculate_all_indicators()
+                indicators = tech.get_latest_indicators()
+                
+                # Get historical trend context for duration/slope/divergence analysis
+                trend_context = tech.get_trend_context(symbol, api_market_type)
+                indicators['trend_context'] = trend_context
+                
+                ml_engine = MLTradingEngine()
+                prediction = ml_engine.predict(indicators)
+                
+                st.session_state['last_signal_prediction'] = prediction
+                st.session_state['last_signal_symbol'] = symbol
+                st.session_state['last_signal_market_type'] = api_market_type  # Store the API-compatible market type
+                st.session_state['last_signal_indicators'] = indicators
+                
+                # Pre-fill form fields with predicted values
+                if prediction.get('entry_price'):
+                    st.session_state['manual_entry_price_signal'] = float(prediction['entry_price'])
+                    st.session_state['manual_sl_signal'] = float(prediction.get('stop_loss', 0.0))
+                    st.session_state['manual_tp_signal'] = float(prediction.get('take_profit', 0.0))
+                else:
+                    # Clear stale values for HOLD predictions
+                    if 'manual_entry_price_signal' in st.session_state:
+                        del st.session_state['manual_entry_price_signal']
+                    if 'manual_sl_signal' in st.session_state:
+                        del st.session_state['manual_sl_signal']
+                    if 'manual_tp_signal' in st.session_state:
+                        del st.session_state['manual_tp_signal']
+                
+                st.subheader("AI Recommendation")
+                
+                signal_color = "🟢" if prediction['signal'] == 'LONG' else "🔴" if prediction['signal'] == 'SHORT' else "🟡"
+                st.markdown(f"## {signal_color} {prediction['signal']}")
+                st.markdown(f"**Confidence:** {prediction['confidence']}%")
+                st.info(prediction['recommendation'])
+                
+                if prediction['entry_price']:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Entry Price", format_price(prediction['entry_price']))
+                    with col2:
+                        st.metric("Stop Loss", format_price(prediction['stop_loss']))
+                    with col3:
+                        st.metric("Take Profit", format_price(prediction['take_profit']))
+                
+                with st.expander("Model Details"):
+                    st.write(f"Random Forest Confidence: {prediction.get('rf_confidence', 0)}%")
+                    st.write(f"XGBoost Confidence: {prediction.get('xgb_confidence', 0)}%")
+                    st.write(f"Win Probability: {prediction.get('win_probability', 0)}%")
+    
+    if 'last_signal_prediction' in st.session_state and st.session_state['last_signal_prediction']:
+        prediction = st.session_state['last_signal_prediction']
+        symbol = st.session_state.get('last_signal_symbol', '')
+        market_type = st.session_state.get('last_signal_market_type', 'crypto')
+        signal_indicators = st.session_state.get('last_signal_indicators', None)
+        
+        # Allow manual position tracking even when AI says HOLD
+        st.divider()
+        st.write("**💡 Want to track a position?**")
+        
+        col1, col2, col3 = st.columns([2, 2, 2])
+        
+        with col1:
+            manual_direction_signal = st.selectbox(
+                "Trade Direction",
+                ["LONG", "SHORT"],
+                key="manual_direction_signal",
+                index=0 if prediction['signal'] == 'LONG' else (1 if prediction['signal'] == 'SHORT' else 0)
+            )
+        
+        with col2:
+            manual_entry_signal = st.number_input(
+                "Entry Price",
+                min_value=0.0,
+                value=float(prediction.get('entry_price', 0.0)) if prediction.get('entry_price') else 0.0,
+                step=0.01,
+                key="manual_entry_price_signal"
+            )
+        
+        with col3:
+            trade_quantity_signal = st.number_input(
+                "Quantity (optional)", 
+                min_value=0.0, 
+                step=0.01,
+                key="signal_qty",
+                help="Enter trade size"
+            )
+        
+        col1, col2 = st.columns([2, 2])
+        
+        with col1:
+            manual_sl_signal = st.number_input(
+                "Stop Loss",
+                min_value=0.0,
+                value=float(prediction.get('stop_loss', 0.0)) if prediction.get('stop_loss') else 0.0,
+                step=0.01,
+                key="manual_sl_signal"
+            )
+        
+        with col2:
+            manual_tp_signal = st.number_input(
+                "Take Profit (optional)",
+                min_value=0.0,
+                value=float(prediction.get('take_profit', 0.0)) if prediction.get('take_profit') else 0.0,
+                step=0.01,
+                key="manual_tp_signal"
+            )
+        
+        if prediction['signal'] == 'HOLD':
+            st.warning("⚠️ AI recommends HOLD - You're entering a manual position")
+        
+        if st.button("📊 Track This Position", type="primary", key="take_trade_signal"):
+            if manual_entry_signal <= 0:
+                st.error("❌ Please enter a valid entry price")
+            else:
+                monitor = PositionMonitor()
+                result = monitor.add_position(
+                    symbol,
+                    market_type,
+                    manual_direction_signal,
+                    manual_entry_signal,
+                    quantity=trade_quantity_signal if trade_quantity_signal > 0 else None,
+                    stop_loss=manual_sl_signal if manual_sl_signal > 0 else None,
+                    take_profit=manual_tp_signal if manual_tp_signal > 0 else None,
+                    indicators=signal_indicators
+                )
+                
+                if result['success']:
+                    st.success(f"✅ {result['message']}")
+                    st.success(f"🎯 Position added: {symbol} {manual_direction_signal} @ {format_price(manual_entry_signal)}")
+                    st.info("📍 Go to 'Position Tracker' to view and manage this position")
+                    del st.session_state['last_signal_prediction']
+                    del st.session_state['last_signal_symbol']
+                    del st.session_state['last_signal_market_type']
+                    if 'last_signal_indicators' in st.session_state:
+                        del st.session_state['last_signal_indicators']
+                    st.rerun()
+                else:
+                        st.error(f"❌ {result['message']}")
+
+elif menu == "Position Tracker":
+    st.header("📍 Active Position Monitor")
+    
+    tab1, tab2, tab3 = st.tabs(["Active Positions", "Add Position", "Close Position"])
+    
+    with tab1:
+        st.subheader("Your Active Positions")
+        
+        # AUTO-CHECK: Automatically check positions when tab loads
+        if 'auto_checked_positions' not in st.session_state:
+            st.session_state['auto_checked_positions'] = False
+        
+        if not st.session_state['auto_checked_positions']:
+            monitor = PositionMonitor()
+            with st.spinner("Auto-checking positions..."):
+                monitor.check_active_positions()
+                st.session_state['auto_checked_positions'] = True
+        
+        if st.button("🔄 Check All Positions"):
+            st.session_state['auto_checked_positions'] = False  # Reset to allow fresh check
+            monitor = PositionMonitor()
+            with st.spinner("Checking positions..."):
+                results = monitor.check_active_positions()
+                
+                if results:
+                    for result in results:
+                        if result['status'] == 'success':
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                st.write(f"**{result['symbol']}**")
+                                st.write(f"Type: {result['trade_type']}")
+                            
+                            with col2:
+                                st.metric("Entry", format_price(result['entry_price']))
+                                st.metric("Current", format_price(result['current_price']))
+                            
+                            with col3:
+                                pnl_color = "normal" if result['pnl_percentage'] >= 0 else "inverse"
+                                st.metric("P&L", f"{result['pnl_percentage']:+.2f}%", delta_color=pnl_color)
+                            
+                            with col4:
+                                rec_color = "🟢" if result['recommendation'] == 'HOLD' else "🔴"
+                                st.write(f"{rec_color} **{result['recommendation']}**")
+                                st.write(result['reason'])
+                            
+                            st.divider()
+                else:
+                    st.info("No active positions")
+        
+        session = get_session()
+        positions = session.query(ActivePosition).filter(ActivePosition.is_active == True).all()
+        session.close()
+        
+        if positions:
+            for pos in positions:
+                with st.expander(f"**{pos.symbol}** ({pos.trade_type}) - Entry: {format_price(pos.entry_price)}", expanded=False):
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Entry Price", format_price(pos.entry_price))
+                        st.metric("Stop Loss", format_price(pos.stop_loss) if pos.stop_loss else "Not set")
+                    with col2:
+                        st.metric("Current Price", format_price(pos.current_price) if pos.current_price else "N/A")
+                        st.metric("Take Profit", format_price(pos.take_profit) if pos.take_profit else "Not set")
+                    with col3:
+                        riyadh_time = convert_to_riyadh_time(pos.entry_time)
+                        st.write(f"**Entry Time:** {riyadh_time.strftime('%Y-%m-%d %H:%M')} (Riyadh)")
+                        st.write(f"**Quantity:** {pos.quantity}" if pos.quantity else "**Quantity:** Not set")
+                    
+                    # Show tight monitoring alerts
+                    if pos.monitoring_alerts and isinstance(pos.monitoring_alerts, list) and len(pos.monitoring_alerts) > 0:
+                        st.divider()
+                        st.write("### 🚨 **Tight Monitoring Alerts**")
+                        
+                        for alert in pos.monitoring_alerts:
+                            severity = alert.get('severity', 'MEDIUM')
+                            alert_type = alert.get('type', '')
+                            message = alert.get('message', '')
+                            recommendation = alert.get('recommendation', '')
+                            
+                            if severity == 'HIGH':
+                                st.error(f"{message}")
+                                st.warning(f"**💡 Recommendation:** {recommendation}")
+                            elif severity == 'MEDIUM':
+                                st.warning(f"{message}")
+                                st.info(f"**💡 Recommendation:** {recommendation}")
+                    
+                    # Show automatic monitoring recommendation
+                    if pos.current_recommendation:
+                        st.divider()
+                        rec_color = "🟢" if pos.current_recommendation == 'HOLD' else "🔴"
+                        st.write(f"### {rec_color} Auto-Monitor: **{pos.current_recommendation}**")
+                        
+                        if pos.last_check_time:
+                            last_check_riyadh = convert_to_riyadh_time(pos.last_check_time)
+                            st.caption(f"Last checked: {last_check_riyadh.strftime('%Y-%m-%d %H:%M:%S')} (Riyadh)")
+                        
+                        st.info("💡 Position is being monitored automatically every 15 minutes")
+                    
+                    st.divider()
+                    st.write("**✏️ Adjust Entry Price**")
+                    st.caption("Update entry price if it differs from your actual live trading platform entry")
+                    
+                    col_a, col_b = st.columns([2, 1])
+                    
+                    with col_a:
+                        new_entry = st.number_input(
+                            "New Entry Price",
+                            min_value=0.0,
+                            value=float(pos.entry_price),
+                            step=0.01,
+                            key=f"edit_entry_{pos.symbol}"
+                        )
+                    
+                    with col_b:
+                        st.write("")
+                        st.write("")
+                        if st.button("Update Entry", key=f"update_btn_{pos.symbol}"):
+                            if new_entry != pos.entry_price:
+                                monitor = PositionMonitor()
+                                result = monitor.update_entry_price(pos.symbol, new_entry)
+                                
+                                if result['success']:
+                                    st.success(f"✅ {result['message']}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {result['message']}")
+                            else:
+                                st.info("No change - entry price is the same")
+    
+    with tab2:
+        st.subheader("Add New Position")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            market_type = st.selectbox("Market Type", ["crypto", "forex", "metals", "custom"], key="add_market")
+            if market_type == "crypto":
+                symbol = st.selectbox("Pair", CRYPTO_PAIRS, key="add_symbol")
+            elif market_type == "forex":
+                symbol = st.selectbox("Pair", FOREX_PAIRS, key="add_symbol")
+            elif market_type == "metals":
+                symbol = st.selectbox("Metal", METALS, key="add_symbol")
+            else:  # custom
+                symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD)", placeholder="BTC/USD", key="add_symbol_custom").upper()
+            
+            trade_type = st.selectbox("Trade Type", ["LONG", "SHORT"])
+        
+        with col2:
+            entry_price = st.number_input("Entry Price", min_value=0.0, step=0.01)
+            quantity = st.number_input("Quantity", min_value=0.0, step=0.01)
+            stop_loss = st.number_input("Stop Loss (optional)", min_value=0.0, step=0.01)
+            take_profit = st.number_input("Take Profit (optional)", min_value=0.0, step=0.01)
+        
+        if st.button("Add Position"):
+            if not symbol or symbol.strip() == "":
+                st.error("❌ Please enter a trading pair symbol")
+                st.stop()
+            
+            # Map 'custom' to 'forex' for API compatibility
+            api_market_type = "forex" if market_type == "custom" else market_type
+            
+            monitor = PositionMonitor()
+            result = monitor.add_position(
+                symbol, api_market_type, trade_type, entry_price,
+                quantity if quantity > 0 else None,
+                stop_loss if stop_loss > 0 else None,
+                take_profit if take_profit > 0 else None
+            )
+            
+            if result['success']:
+                st.success(result['message'])
+                st.rerun()
+            else:
+                st.error(result['message'])
+    
+    with tab3:
+        st.subheader("Close Position")
+        
+        session = get_session()
+        active_positions = session.query(ActivePosition).filter(ActivePosition.is_active == True).all()
+        session.close()
+        
+        if active_positions:
+            position_symbols = [f"{p.symbol} ({p.trade_type})" for p in active_positions]
+            selected = st.selectbox("Select Position", position_symbols)
+            
+            selected_symbol = selected.split(" (")[0]
+            selected_pos = next((p for p in active_positions if p.symbol == selected_symbol), None)
+            
+            if selected_pos:
+                st.info(f"📊 Position: **{selected_pos.symbol}** | Entry: **{format_price(selected_pos.entry_price)}** | Current: **{format_price(selected_pos.current_price)}**" if selected_pos.current_price else f"📊 Position: **{selected_pos.symbol}** | Entry: **{format_price(selected_pos.entry_price)}**")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Exit Price**")
+                if selected_pos and selected_pos.current_price:
+                    st.caption(f"💡 Current market price: {format_price(selected_pos.current_price)}")
+                    default_exit = float(selected_pos.current_price)
+                else:
+                    st.caption("💡 Enter your actual exit price from live platform")
+                    default_exit = float(selected_pos.entry_price) if selected_pos else 0.0
+                
+                exit_price = st.number_input(
+                    "Adjust exit price if needed", 
+                    min_value=0.0, 
+                    value=default_exit,
+                    step=0.01, 
+                    key="exit_price",
+                    label_visibility="collapsed"
+                )
+                outcome = st.selectbox("Outcome", ["win", "loss"])
+            
+            with col2:
+                exit_type = st.selectbox(
+                    "Exit Type", 
+                    ["Manual Exit", "TO Achieved (Stop Loss)", "TO Achieved (Take Profit)"],
+                    help="Select how you exited: manually or if stop loss/take profit was hit"
+                )
+                
+            notes = st.text_area(
+                "Exit Notes (Optional)", 
+                placeholder="Why did you exit? What did you learn from this trade?",
+                help="Record your reasoning and observations for future learning"
+            )
+            
+            if st.button("Close Position", type="primary"):
+                symbol = selected.split(" (")[0]
+                monitor = PositionMonitor()
+                result = monitor.close_position(
+                    symbol, 
+                    exit_price, 
+                    outcome,
+                    exit_type=exit_type,
+                    notes=notes if notes else None
+                )
+                
+                if result['success']:
+                    st.success(f"✅ {result['message']}")
+                    st.info("📚 System is learning from this trade to improve future predictions!")
+                    st.rerun()
+                else:
+                    st.error(result['message'])
+        else:
+            st.info("No active positions to close")
+
+elif menu == "Risk Calculator":
+    st.header("🎯 Position Size Calculator")
+    st.markdown("**Calculate the right position size based on your capital and risk tolerance**")
+    
+    st.info("💡 **Golden Rule**: Never risk more than 1-2% of your total capital on a single trade!")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Your Capital & Risk")
+        total_capital = st.number_input(
+            "Total Trading Capital ($)", 
+            min_value=100.0, 
+            value=10000.0,
+            step=100.0,
+            help="Your total available trading capital"
+        )
+        
+        risk_percentage = st.slider(
+            "Risk Per Trade (%)", 
+            min_value=0.5, 
+            max_value=5.0,
+            value=1.0,
+            step=0.25,
+            help="Industry standard: 1-2%. Aggressive: 2-3%. Very risky: 3%+"
+        )
+        
+        if risk_percentage <= 2.0:
+            st.success(f"✅ {risk_percentage}% is a safe risk level")
+        elif risk_percentage <= 3.0:
+            st.warning(f"⚠️ {risk_percentage}% is aggressive - be careful!")
+        else:
+            st.error(f"❌ {risk_percentage}% is very risky - you could lose your capital quickly!")
+    
+    with col2:
+        st.subheader("Trade Details")
+        
+        trade_direction = st.selectbox(
+            "Trade Direction",
+            ["LONG", "SHORT"],
+            help="LONG = Buy low, sell high. SHORT = Sell high, buy back low."
+        )
+        
+        entry_price = st.number_input(
+            "Entry Price ($)", 
+            min_value=0.01, 
+            value=65000.0,
+            step=0.01,
+            help="Your planned entry price for this trade"
+        )
+        
+        if trade_direction == "LONG":
+            stop_loss_price = st.number_input(
+                "Stop Loss Price ($)", 
+                min_value=0.01,
+                value=64000.0,
+                step=0.01,
+                help="Stop loss BELOW entry (cut losses if price drops)"
+            )
+            
+            take_profit_price = st.number_input(
+                "Take Profit Price ($)", 
+                min_value=0.01,
+                value=68000.0,
+                step=0.01,
+                help="Take profit ABOVE entry (lock profits when price rises)"
+            )
+        else:  # SHORT
+            stop_loss_price = st.number_input(
+                "Stop Loss Price ($)", 
+                min_value=0.01,
+                value=66000.0,
+                step=0.01,
+                help="Stop loss ABOVE entry (cut losses if price rises)"
+            )
+            
+            take_profit_price = st.number_input(
+                "Take Profit Price ($)", 
+                min_value=0.01,
+                value=62000.0,
+                step=0.01,
+                help="Take profit BELOW entry (lock profits when price drops)"
+            )
+    
+    st.divider()
+    
+    risk_amount = total_capital * (risk_percentage / 100)
+    distance_to_stop = abs(entry_price - stop_loss_price)
+    
+    # Validate stop loss and take profit placement
+    validation_errors = []
+    
+    if trade_direction == "LONG":
+        if stop_loss_price >= entry_price:
+            validation_errors.append("❌ **LONG trades**: Stop loss must be BELOW entry price")
+        if take_profit_price <= entry_price:
+            validation_errors.append("❌ **LONG trades**: Take profit must be ABOVE entry price")
+    else:  # SHORT
+        if stop_loss_price <= entry_price:
+            validation_errors.append("❌ **SHORT trades**: Stop loss must be ABOVE entry price")
+        if take_profit_price >= entry_price:
+            validation_errors.append("❌ **SHORT trades**: Take profit must be BELOW entry price")
+    
+    if validation_errors:
+        for error in validation_errors:
+            st.error(error)
+        st.info(f"""
+        **{trade_direction} Trade Setup:**
+        - Entry: {format_price(entry_price)}
+        - Stop Loss should be: {'BELOW' if trade_direction == 'LONG' else 'ABOVE'} entry
+        - Take Profit should be: {'ABOVE' if trade_direction == 'LONG' else 'BELOW'} entry
+        """)
+    
+    if distance_to_stop > 0:
+        position_size_units = risk_amount / distance_to_stop
+        position_value = position_size_units * entry_price
+        
+        potential_loss = risk_amount
+        
+        # Calculate profit based on trade direction
+        if trade_direction == "LONG":
+            potential_profit = (take_profit_price - entry_price) * position_size_units
+        else:  # SHORT
+            potential_profit = (entry_price - take_profit_price) * position_size_units
+        
+        risk_reward_ratio = potential_profit / potential_loss if potential_loss > 0 and potential_profit > 0 else 0
+        
+        st.subheader("📊 Calculated Position Size")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "Risk Amount", 
+                format_price(risk_amount),
+                help="Maximum you'll lose if stop loss is hit"
+            )
+        
+        with col2:
+            st.metric(
+                "Position Size", 
+                f"{position_size_units:,.4f} units",
+                help="Number of units/coins to buy"
+            )
+        
+        with col3:
+            st.metric(
+                "Investment", 
+                format_price(position_value),
+                help="Total amount to invest"
+            )
+        
+        with col4:
+            rr_color = "normal" if risk_reward_ratio >= 2 else "inverse"
+            st.metric(
+                "Risk/Reward", 
+                f"1:{risk_reward_ratio:.1f}",
+                delta_color=rr_color,
+                help="Risk vs potential reward ratio"
+            )
+        
+        st.divider()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("💰 Profit & Loss Scenarios")
+            st.write(f"**If Stop Loss is Hit ({format_price(stop_loss_price)}):**")
+            st.error(f"❌ Loss: {format_price(potential_loss)} ({risk_percentage}% of capital)")
+            
+            st.write(f"**If Take Profit is Hit ({format_price(take_profit_price)}):**")
+            if potential_profit > 0:
+                profit_percentage = (potential_profit / total_capital) * 100
+                st.success(f"✅ Profit: {format_price(potential_profit)} ({profit_percentage:.2f}% of capital)")
+            else:
+                loss_percentage = abs((potential_profit / total_capital) * 100)
+                st.error(f"❌ LOSS: {format_price(abs(potential_profit))} ({loss_percentage:.2f}% of capital)")
+                st.warning(f"⚠️ This is a LOSS because for {trade_direction} trades, take profit must be {'above' if trade_direction == 'LONG' else 'below'} entry price!")
+        
+        with col2:
+            st.subheader("🎯 Trade Quality Assessment")
+            
+            if risk_reward_ratio >= 3:
+                st.success("✅ **Excellent** risk/reward ratio (3:1 or better)")
+            elif risk_reward_ratio >= 2:
+                st.success("✅ **Good** risk/reward ratio (2:1 to 3:1)")
+            elif risk_reward_ratio >= 1.5:
+                st.warning("⚠️ **Acceptable** risk/reward ratio (1.5:1 to 2:1)")
+            else:
+                st.error("❌ **Poor** risk/reward ratio (less than 1.5:1)\nConsider skipping this trade!")
+            
+            if position_value > total_capital:
+                st.error(f"❌ **Warning**: Investment ({format_price(position_value)}) exceeds your capital!")
+                st.write("**Solutions:**")
+                st.write(f"• Move stop loss closer to entry (currently {format_price(distance_to_stop)} away)")
+                st.write(f"• Reduce risk percentage (currently {risk_percentage}%)")
+            elif position_value > total_capital * 0.3:
+                st.warning(f"⚠️ This trade uses {(position_value/total_capital)*100:.1f}% of your capital")
+                st.write("Consider diversifying across multiple trades")
+            else:
+                st.success(f"✅ Trade size is {(position_value/total_capital)*100:.1f}% of capital - well diversified!")
+        
+        st.divider()
+        
+        st.subheader("📝 Summary")
+        st.markdown(f"""
+        **To execute this {trade_direction} trade:**
+        1. {'Buy' if trade_direction == 'LONG' else 'Sell short'} **{position_size_units:,.4f} units** at **{format_price(entry_price)}**
+        2. Total investment: **{format_price(position_value)}**
+        3. Set stop loss at **{format_price(stop_loss_price)}** (risk: {format_price(potential_loss)})
+        4. Set take profit at **{format_price(take_profit_price)}** (potential: {format_price(potential_profit)})
+        5. Risk/Reward: **1:{risk_reward_ratio:.1f}**
+        
+        **If this looks good, you can add it to Position Tracker manually or use AI recommendations!**
+        """)
+
+elif menu == "Performance Analytics":
+    st.header("📊 Performance Analytics")
+    
+    session = get_session()
+    
+    trades = session.query(Trade).filter(Trade.exit_price.isnot(None)).all()
+    
+    if trades:
+        total_trades = len(trades)
+        winning_trades = len([t for t in trades if t.outcome == 'win'])
+        losing_trades = len([t for t in trades if t.outcome == 'loss'])
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Trades", total_trades)
+        with col2:
+            st.metric("Winning Trades", winning_trades)
+        with col3:
+            st.metric("Losing Trades", losing_trades)
+        with col4:
+            st.metric("Win Rate", f"{win_rate:.1f}%")
+        
+        # Calculate detailed P&L analytics
+        wins = [t for t in trades if t.outcome == 'win' and t.profit_loss is not None]
+        losses = [t for t in trades if t.outcome == 'loss' and t.profit_loss is not None]
+        
+        total_pnl = sum(t.profit_loss for t in trades if t.profit_loss is not None)
+        avg_win = sum(t.profit_loss for t in wins) / len(wins) if wins else 0
+        avg_loss = sum(t.profit_loss for t in losses) / len(losses) if losses else 0
+        risk_reward_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+        
+        # Prominent P&L Analytics Section
+        st.divider()
+        st.subheader("💰 Profit & Loss Analytics")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            pnl_color = "normal" if total_pnl >= 0 else "inverse"
+            st.metric("Total P&L", f"${total_pnl:.2f}", delta_color=pnl_color)
+        
+        with col2:
+            st.metric("Avg Win", f"${avg_win:.2f}", delta_color="normal" if avg_win > 0 else "off")
+        
+        with col3:
+            st.metric("Avg Loss", f"${avg_loss:.2f}", delta_color="inverse" if avg_loss < 0 else "off")
+        
+        with col4:
+            rr_color = "normal" if risk_reward_ratio >= 2 else "inverse"
+            st.metric("Risk/Reward", f"1:{risk_reward_ratio:.2f}", delta_color=rr_color)
+        
+        # Performance Quality Assessment
+        if risk_reward_ratio >= 2:
+            st.success("✅ **Excellent Risk/Reward** - Your wins are significantly larger than your losses!")
+        elif risk_reward_ratio >= 1.5:
+            st.info("📊 **Good Risk/Reward** - You're managing risk well, keep it up!")
+        elif risk_reward_ratio >= 1:
+            st.warning("⚠️ **Acceptable Risk/Reward** - Consider taking larger profits or cutting losses faster.")
+        else:
+            st.error("❌ **Poor Risk/Reward** - Your losses are larger than wins. Review your strategy!")
+        
+        # Win Rate vs R:R Analysis
+        expected_value = (win_rate / 100 * avg_win) + ((100 - win_rate) / 100 * avg_loss)
+        
+        st.write(f"**Expected Value per Trade:** ${expected_value:.2f}")
+        
+        if expected_value > 0:
+            st.success(f"✅ Your trading strategy is profitable! Over time, you expect to make ${expected_value:.2f} per trade.")
+        else:
+            st.error(f"❌ Your strategy is losing money. Expected loss: ${expected_value:.2f} per trade. Adjust your approach!")
+        
+        st.divider()
+        st.subheader("📋 Trade History")
+        
+        # Filter controls
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            all_symbols = sorted(list(set([t.symbol for t in trades])))
+            filter_symbol = st.selectbox("Filter by Symbol", ["All"] + all_symbols, key="filter_symbol")
+        
+        with col2:
+            filter_type = st.selectbox("Trade Type", ["All", "LONG", "SHORT"], key="filter_type")
+        
+        with col3:
+            filter_outcome = st.selectbox("Outcome", ["All", "WIN", "LOSS"], key="filter_outcome")
+        
+        with col4:
+            st.write("")
+            st.write("")
+            if st.button("🔄 Reset Filters"):
+                st.rerun()
+        
+        # Apply filters
+        filtered_trades = trades
+        if filter_symbol != "All":
+            filtered_trades = [t for t in filtered_trades if t.symbol == filter_symbol]
+        if filter_type != "All":
+            filtered_trades = [t for t in filtered_trades if t.trade_type == filter_type]
+        if filter_outcome != "All":
+            filtered_trades = [t for t in filtered_trades if t.outcome == filter_outcome.lower()]
+        
+        st.caption(f"Showing {len(filtered_trades)} of {len(trades)} trades")
+        
+        for trade in reversed(filtered_trades):
+            exit_time_riyadh = convert_to_riyadh_time(trade.exit_time) if trade.exit_time else None
+            exit_time_str = exit_time_riyadh.strftime('%Y-%m-%d %H:%M') if exit_time_riyadh else 'N/A'
+            
+            with st.expander(f"{trade.symbol} ({trade.trade_type}) - {trade.outcome.upper()} - {exit_time_str}"):
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Entry Price", format_price(trade.entry_price))
+                with col2:
+                    st.metric("Exit Price", format_price(trade.exit_price))
+                with col3:
+                    pnl_color = "normal" if trade.profit_loss_percentage and trade.profit_loss_percentage >= 0 else "inverse"
+                    st.metric("P&L", f"{trade.profit_loss_percentage:.2f}%" if trade.profit_loss_percentage else "N/A", delta_color=pnl_color)
+                with col4:
+                    outcome_emoji = "✅" if trade.outcome == "win" else "❌"
+                    st.metric("Outcome", f"{outcome_emoji} {trade.outcome.upper()}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if trade.exit_type:
+                        exit_emoji = "🎯" if "TO Achieved" in trade.exit_type else "👤"
+                        st.write(f"**Exit Type:** {exit_emoji} {trade.exit_type}")
+                    else:
+                        st.write("**Exit Type:** Not recorded")
+                    
+                    entry_time_riyadh = convert_to_riyadh_time(trade.entry_time)
+                    st.write(f"**Entry Time:** {entry_time_riyadh.strftime('%Y-%m-%d %H:%M')} (Riyadh)")
+                    st.write(f"**Exit Time:** {exit_time_str} (Riyadh)" if exit_time_riyadh else "**Exit Time:** N/A")
+                
+                with col2:
+                    if trade.quantity:
+                        st.write(f"**Quantity:** {trade.quantity}")
+                    if trade.profit_loss:
+                        st.write(f"**Total P&L:** ${trade.profit_loss:.2f}")
+                
+                if trade.notes:
+                    st.write("**Exit Notes:**")
+                    st.info(trade.notes)
+        
+        st.divider()
+        st.subheader("Model Performance")
+        
+        # Manual ML training trigger for existing trades
+        if total_trades >= 10:
+            model_perf = session.query(ModelPerformance).filter(ModelPerformance.is_active == True).all()
+            
+            if not model_perf:
+                st.warning(f"⚠️ You have {total_trades} trades but ML models haven't been trained yet!")
+                st.write("This happens when trades were added before ML was configured.")
+                
+                if st.button("🤖 Train ML Models Now", type="primary"):
+                    with st.spinner("Training ML models on your existing trades..."):
+                        try:
+                            from ml_engine import MLTradingEngine
+                            ml_engine = MLTradingEngine()
+                            
+                            # Train with lower threshold for manual trigger (min 10 trades)
+                            success = ml_engine.train_models(min_trades=10)
+                            
+                            if success:
+                                st.success(f"✅ ML models trained successfully on {total_trades} trades!")
+                                st.info("🔄 Refresh the page to see Model Performance and Indicator Analysis")
+                            else:
+                                st.error("❌ Training failed - make sure your trades have indicator data at entry")
+                        except Exception as e:
+                            st.error(f"❌ Error training models: {str(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
+        
+        model_perf = session.query(ModelPerformance).filter(ModelPerformance.is_active == True).all()
+        
+        if model_perf:
+            for model in model_perf:
+                with st.expander(f"{model.model_name} - Accuracy: {model.accuracy*100:.1f}%"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Precision", f"{model.precision*100:.1f}%")
+                    with col2:
+                        st.metric("Recall", f"{model.recall*100:.1f}%")
+                    with col3:
+                        st.metric("F1 Score", f"{model.f1_score*100:.1f}%")
+                    
+                    training_time_riyadh = convert_to_riyadh_time(model.training_date)
+                    st.write(f"Training Date: {training_time_riyadh.strftime('%Y-%m-%d %H:%M')} (Riyadh)")
+                    st.write(f"Total Trades Used: {model.total_trades}")
+            
+            # Manual retrain button with cooldown protection
+            st.divider()
+            st.write("**🔄 Manual Retraining**")
+            st.write("Retrain models manually on all historical trades (automatic retraining happens every 10 trades).")
+            
+            # Check cooldown (15 minutes)
+            most_recent_model = max(model_perf, key=lambda x: x.training_date)
+            minutes_since_last_train = (datetime.utcnow() - most_recent_model.training_date).total_seconds() / 60
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                if minutes_since_last_train < 15:
+                    remaining_minutes = int(15 - minutes_since_last_train)
+                    st.warning(f"⏳ Cooldown active: Wait {remaining_minutes} more minutes before manual retrain")
+                else:
+                    st.info(f"✅ Ready to retrain on {total_trades} trades")
+            
+            with col2:
+                retrain_button_disabled = (minutes_since_last_train < 15 or total_trades < 10)
+                
+                if st.button("🔄 Retrain Now", type="secondary", disabled=retrain_button_disabled):
+                    with st.spinner("Retraining ML models and backfilling indicator graphs..."):
+                        try:
+                            from ml_engine import MLTradingEngine
+                            ml_engine = MLTradingEngine()
+                            
+                            success = ml_engine.train_models(min_trades=10)
+                            
+                            if success:
+                                trades_processed = ml_engine.backfill_indicator_performance()
+                                st.success(f"✅ Models retrained on {total_trades} trades!")
+                                st.success(f"📊 Indicator performance analyzed for {trades_processed} trades!")
+                                st.info("🔄 Refresh the page to see indicator graphs and updated metrics")
+                            else:
+                                st.error("❌ Retraining failed - ensure trades have indicator data")
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
+        
+        # Indicator Performance Analysis Dashboard
+        st.subheader("🎯 Indicator Performance Analysis")
+        
+        from database import IndicatorPerformance
+        indicator_perf = session.query(IndicatorPerformance).order_by(IndicatorPerformance.accuracy_rate.desc()).all()
+        
+        if indicator_perf:
+            st.write("**Discover which indicators are most accurate for your trading!**")
+            
+            # Create indicator performance table
+            perf_data = []
+            for ind in indicator_perf:
+                perf_data.append({
+                    'Indicator': ind.indicator_name,
+                    'Correct': ind.correct_count,
+                    'Wrong': ind.wrong_count,
+                    'Accuracy %': f"{ind.accuracy_rate:.1f}%",
+                    'Weight': f"{ind.weight_multiplier:.2f}x",
+                    'Total Signals': ind.total_signals
+                })
+            
+            perf_df = pd.DataFrame(perf_data)
+            st.dataframe(perf_df, use_container_width=True)
+            
+            # Visual bar chart of accuracy rates
+            st.write("**Indicator Accuracy Rates:**")
+            
+            # Prepare data for chart
+            indicators = [ind.indicator_name for ind in indicator_perf]
+            accuracies = [ind.accuracy_rate for ind in indicator_perf]
+            
+            # Create bar chart
+            fig = go.Figure(data=[
+                go.Bar(
+                    x=indicators,
+                    y=accuracies,
+                    marker_color=['green' if acc >= 50 else 'red' for acc in accuracies],
+                    text=[f"{acc:.1f}%" for acc in accuracies],
+                    textposition='outside'
+                )
+            ])
+            
+            fig.update_layout(
+                title="Indicator Accuracy Comparison",
+                xaxis_title="Indicator",
+                yaxis_title="Accuracy %",
+                yaxis=dict(range=[0, 100]),
+                height=400,
+                showlegend=False
+            )
+            
+            # Add 50% reference line
+            fig.add_hline(y=50, line_dash="dash", line_color="blue", 
+                         annotation_text="50% (Random)", annotation_position="right")
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Key insights
+            best_ind = max(indicator_perf, key=lambda x: x.accuracy_rate)
+            worst_ind = min(indicator_perf, key=lambda x: x.accuracy_rate)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.success(f"**🏆 Best Performer:** {best_ind.indicator_name} ({best_ind.accuracy_rate:.1f}%)")
+            with col2:
+                st.error(f"**📉 Weakest:** {worst_ind.indicator_name} ({worst_ind.accuracy_rate:.1f}%)")
+        else:
+            st.info("Complete some trades to see individual indicator performance!")
+    
+    # DIAGNOSTIC: Show indicator capture status (always show for completed trades)
+    if trades and not indicator_perf:
+        total_trades = len(trades)
+        
+        st.divider()
+        st.subheader("🔍 Diagnostic: Indicator Data Status")
+        
+        # Only count COMPLETED trades with indicators (same filter as trades list)
+        trades_with_indicators = session.query(Trade).filter(
+            Trade.exit_price.isnot(None),
+            Trade.indicators_at_entry.isnot(None),
+            Trade.indicators_at_entry != None
+        ).count()
+        
+        trades_without_indicators = total_trades - trades_with_indicators
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Trades", total_trades)
+        with col2:
+            st.metric("With Indicators", trades_with_indicators, delta_color="normal")
+        with col3:
+            st.metric("Without Indicators", trades_without_indicators, delta_color="inverse")
+        
+        if trades_without_indicators > 0:
+            st.warning(f"""
+            ⚠️ **{trades_without_indicators} trades missing indicator data!**
+            
+            **Why graphs aren't showing:**
+            - Your older trades were created before the indicator capture fix
+            - The system needs trades with indicator data to generate graphs
+            
+            **Solution:**
+            1. **Close new trades** - Latest fix now captures indicators automatically
+            2. **After 2-3 new trades with indicators** - Graphs will start appearing
+            3. **Manual retrain** - Click "Retrain Now" button above to update the system
+            
+            The indicator capture fix is working now - your next trades will have full data! ✅
+            """)
+        else:
+            st.success("✅ All trades have indicator data - graphs should appear soon!")
+    else:
+        st.info("No completed trades yet. Start trading to see analytics!")
+    
+    session.close()
+
+elif menu == "Model Training":
+    st.header("🤖 AI Model Training")
+    
+    st.write("Train the AI models on your completed trades to improve prediction accuracy.")
+    
+    session = get_session()
+    trades_count = session.query(Trade).filter(
+        Trade.exit_price.isnot(None),
+        Trade.outcome.isnot(None)
+    ).count()
+    session.close()
+    
+    st.info(f"Available trades for training: {trades_count}")
+    
+    if trades_count < 30:
+        st.warning(f"⚠️ Minimum 30 trades required for training. You have {trades_count} trades.")
+    
+    min_trades = st.number_input("Minimum trades for training", min_value=10, value=30, step=5)
+    
+    if st.button("Train Models", type="primary", disabled=trades_count < 10):
+        with st.spinner("Training AI models... This may take a few minutes."):
+            ml_engine = MLTradingEngine()
+            success = ml_engine.train_models(min_trades=min_trades)
+            
+            if success:
+                st.success("✅ Models trained successfully!")
+                st.balloons()
+            else:
+                st.error("❌ Training failed. Make sure you have enough completed trades.")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### About")
+st.sidebar.info(
+    "AI-powered trading platform with real-time analysis, "
+    "ML predictions, and automated position monitoring."
+)
