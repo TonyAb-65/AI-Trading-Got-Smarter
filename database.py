@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, JSON, inspect, text, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -149,6 +150,16 @@ class DivergenceStats(Base):
     sample_size = Column(Integer, default=0)
     last_updated = Column(DateTime, default=datetime.utcnow)
 
+class MLModel(Base):
+    __tablename__ = 'ml_models'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_name = Column(String(50), nullable=False, unique=True)
+    model_data = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    version = Column(Integer, default=1)
+
 @st.cache_resource(hash_funcs={str: lambda x: x})
 def get_engine(_database_url=None):
     """
@@ -157,8 +168,11 @@ def get_engine(_database_url=None):
     """
     database_url = _database_url or os.getenv('DATABASE_URL')
     if not database_url:
-        database_url = 'sqlite:///trading_platform.db'
-        print("Warning: DATABASE_URL not set, using SQLite fallback")
+        # Use home directory for SQLite (persists on Streamlit Cloud)
+        home_dir = Path.home()
+        db_path = home_dir / 'trading_platform.db'
+        database_url = f'sqlite:///{db_path}'
+        print(f"💾 DATABASE_URL not set, using persistent SQLite at: {db_path}")
     
     if database_url.startswith('sqlite'):
         engine = create_engine(database_url, connect_args={'check_same_thread': False})
