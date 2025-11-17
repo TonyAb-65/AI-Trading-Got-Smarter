@@ -379,6 +379,10 @@ if menu == "Market Analysis":
                 
                 support_levels, resistance_levels = calculate_support_resistance(indicators_df)
                 
+                # Add S/R levels to indicators for ML predictions
+                latest_indicators['support_levels'] = support_levels
+                latest_indicators['resistance_levels'] = resistance_levels
+                
                 st.success(f"✅ Analysis complete for {symbol}")
                 
                 col1, col2, col3, col4, col5 = st.columns(5)
@@ -692,12 +696,17 @@ elif menu == "Trading Signals":
             
             if df is not None and len(df) > 0:
                 tech = TechnicalIndicators(df)
-                tech.calculate_all_indicators()
+                indicators_df = tech.calculate_all_indicators()
                 indicators = tech.get_latest_indicators()
                 
                 # Get historical trend context for duration/slope/divergence analysis
                 trend_context = tech.get_trend_context(symbol, api_market_type)
                 indicators['trend_context'] = trend_context
+                
+                # Calculate and add S/R levels for ML predictions
+                support_levels, resistance_levels = calculate_support_resistance(indicators_df)
+                indicators['support_levels'] = support_levels
+                indicators['resistance_levels'] = resistance_levels
                 
                 ml_engine = MLTradingEngine()
                 prediction = ml_engine.predict(indicators)
@@ -1442,6 +1451,36 @@ elif menu == "Performance Analytics":
                 if trade.notes:
                     st.write("**Exit Notes:**")
                     st.info(trade.notes)
+                
+                st.divider()
+                
+                if f"delete_confirm_{trade.id}" not in st.session_state:
+                    st.session_state[f"delete_confirm_{trade.id}"] = False
+                
+                col_del1, col_del2 = st.columns([3, 1])
+                with col_del2:
+                    if not st.session_state[f"delete_confirm_{trade.id}"]:
+                        if st.button("🗑️ Delete Trade", key=f"delete_btn_{trade.id}", type="secondary"):
+                            st.session_state[f"delete_confirm_{trade.id}"] = True
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ Are you sure? This cannot be undone!")
+                        col_confirm1, col_confirm2 = st.columns(2)
+                        with col_confirm1:
+                            if st.button("✅ Yes, Delete", key=f"confirm_delete_{trade.id}", type="primary"):
+                                try:
+                                    session.delete(trade)
+                                    session.commit()
+                                    st.session_state[f"delete_confirm_{trade.id}"] = False
+                                    st.success(f"✅ Deleted {trade.symbol} trade!")
+                                    st.rerun()
+                                except Exception as e:
+                                    session.rollback()
+                                    st.error(f"❌ Error deleting trade: {str(e)}")
+                        with col_confirm2:
+                            if st.button("❌ Cancel", key=f"cancel_delete_{trade.id}"):
+                                st.session_state[f"delete_confirm_{trade.id}"] = False
+                                st.rerun()
         
         st.divider()
         st.subheader("Model Performance")
