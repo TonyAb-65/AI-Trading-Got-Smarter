@@ -953,13 +953,13 @@ elif menu == "Position Tracker":
                             min_value=0.0,
                             value=float(pos.entry_price),
                             step=0.01,
-                            key=f"edit_entry_{pos.symbol}"
+                            key=f"edit_entry_{pos.id}"
                         )
                     
                     with col_b:
                         st.write("")
                         st.write("")
-                        if st.button("Update Entry", key=f"update_btn_{pos.symbol}"):
+                        if st.button("Update Entry", key=f"update_btn_{pos.id}"):
                             if new_entry != pos.entry_price:
                                 monitor = PositionMonitor()
                                 result = monitor.update_entry_price(pos.symbol, new_entry, old_entry_price=pos.entry_price)
