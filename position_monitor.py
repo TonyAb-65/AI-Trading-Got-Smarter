@@ -361,17 +361,6 @@ class PositionMonitor:
         session = get_session()
         
         try:
-            existing = session.query(ActivePosition).filter(
-                ActivePosition.symbol == symbol,
-                ActivePosition.is_active == True
-            ).first()
-            
-            if existing:
-                return {
-                    'success': False,
-                    'message': f'Active position already exists for {symbol}'
-                }
-            
             position = ActivePosition(
                 symbol=symbol,
                 market_type=market_type,
@@ -405,14 +394,19 @@ class PositionMonitor:
         finally:
             session.close()
     
-    def close_position(self, symbol, exit_price, outcome, exit_type=None, notes=None):
+    def close_position(self, symbol, exit_price, outcome, exit_type=None, notes=None, entry_price=None):
         session = get_session()
         
         try:
-            position = session.query(ActivePosition).filter(
+            query = session.query(ActivePosition).filter(
                 ActivePosition.symbol == symbol,
                 ActivePosition.is_active == True
-            ).first()
+            )
+            
+            if entry_price is not None:
+                query = query.filter(ActivePosition.entry_price == entry_price)
+            
+            position = query.first()
             
             if not position:
                 return {
@@ -487,15 +481,20 @@ class PositionMonitor:
         finally:
             session.close()
     
-    def update_entry_price(self, symbol, new_entry_price):
+    def update_entry_price(self, symbol, new_entry_price, old_entry_price=None):
         """Update the entry price of an active position"""
         session = get_session()
         
         try:
-            position = session.query(ActivePosition).filter(
+            query = session.query(ActivePosition).filter(
                 ActivePosition.symbol == symbol,
                 ActivePosition.is_active == True
-            ).first()
+            )
+            
+            if old_entry_price is not None:
+                query = query.filter(ActivePosition.entry_price == old_entry_price)
+            
+            position = query.first()
             
             if not position:
                 return {
