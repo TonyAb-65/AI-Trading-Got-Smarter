@@ -224,18 +224,14 @@ def get_market_data_unified(symbol, market_type, interval='1H', limit=100):
         
         if df is not None and market_type == 'crypto' and 'volume' in df.columns:
             if df['volume'].sum() == 0:
-                okx_key = os.getenv('OKX_API_KEY')
-                if okx_key:
-                    print(f"TwelveData returned {symbol} without volume data. Trying OKX for crypto volume...")
-                    okx_client = OKXClient(api_key=okx_key)
-                    okx_df = okx_client.get_market_data(symbol, interval, limit)
-                    if okx_df is not None and okx_df['volume'].sum() > 0:
-                        print(f"✓ Using OKX data for {symbol} (has volume)")
-                        return okx_df
-                    else:
-                        print(f"⚠ OKX also has no volume for {symbol}, using TwelveData anyway")
+                print(f"TwelveData returned {symbol} without volume data. Trying OKX for crypto volume...")
+                okx_client = OKXClient(api_key=os.getenv('OKX_API_KEY'))
+                okx_df = okx_client.get_market_data(symbol, interval, limit)
+                if okx_df is not None and okx_df['volume'].sum() > 0:
+                    print(f"✓ Using OKX data for {symbol} (has volume)")
+                    return okx_df
                 else:
-                    print(f"⚠ {symbol} has no volume data (OKX not configured for fallback)")
+                    print(f"⚠ OKX also has no volume for {symbol}, using TwelveData anyway")
         
         return df
     
