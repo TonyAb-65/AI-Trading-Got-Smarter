@@ -97,12 +97,44 @@ class MLTradingEngine:
         divergence = obv_ctx.get('divergence', 'none')
         features.append(1.0 if divergence == 'bullish' else -1.0 if divergence == 'bearish' else 0.0)
         
+        # Support/Resistance features (NEW - helps ML understand price levels)
+        current_price = indicators.get('current_price', 0)
+        support_levels = indicators.get('support_levels', [])
+        resistance_levels = indicators.get('resistance_levels', [])
+        
+        # Distance to nearest support/resistance (as % of price)
+        nearest_support = support_levels[0] if support_levels else current_price * 0.98
+        nearest_resistance = resistance_levels[0] if resistance_levels else current_price * 1.02
+        
+        support_distance_pct = ((current_price - nearest_support) / current_price * 100) if current_price > 0 else 0
+        resistance_distance_pct = ((nearest_resistance - current_price) / current_price * 100) if current_price > 0 else 0
+        
+        features.append(float(support_distance_pct))
+        features.append(float(resistance_distance_pct))
+        
+        # At support/resistance zone (1 if within 1% of level, else 0)
+        at_support = 1.0 if support_distance_pct < 1.0 else 0.0
+        at_resistance = 1.0 if resistance_distance_pct < 1.0 else 0.0
+        
+        features.append(at_support)
+        features.append(at_resistance)
+        
+        # Number of S/R levels (strength indicator)
+        support_strength = float(len(support_levels))
+        resistance_strength = float(len(resistance_levels))
+        
+        features.append(support_strength)
+        features.append(resistance_strength)
+        
         self.feature_columns = feature_names + [
             'price_vs_sma20', 'price_vs_sma50', 'macd_divergence', 'volume_ratio',
             'rsi_duration', 'rsi_slope', 'rsi_divergence',
             'stoch_duration', 'stoch_slope', 'stoch_divergence',
             'mfi_duration', 'mfi_slope', 'mfi_divergence',
-            'obv_slope', 'obv_divergence'
+            'obv_slope', 'obv_divergence',
+            'support_distance_pct', 'resistance_distance_pct',
+            'at_support_zone', 'at_resistance_zone',
+            'support_strength', 'resistance_strength'
         ]
         
         return np.array(features).reshape(1, -1)
