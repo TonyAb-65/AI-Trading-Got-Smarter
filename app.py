@@ -962,7 +962,7 @@ elif menu == "Position Tracker":
                         if st.button("Update Entry", key=f"update_btn_{pos.symbol}"):
                             if new_entry != pos.entry_price:
                                 monitor = PositionMonitor()
-                                result = monitor.update_entry_price(pos.symbol, new_entry)
+                                result = monitor.update_entry_price(pos.symbol, new_entry, old_entry_price=pos.entry_price)
                                 
                                 if result['success']:
                                     st.success(f"✅ {result['message']}")
@@ -1026,11 +1026,17 @@ elif menu == "Position Tracker":
         session.close()
         
         if active_positions:
-            position_symbols = [f"{p.symbol} ({p.trade_type})" for p in active_positions]
+            position_symbols = [f"{p.symbol} ({p.trade_type} @ {format_price(p.entry_price)})" for p in active_positions]
             selected = st.selectbox("Select Position", position_symbols)
             
             selected_symbol = selected.split(" (")[0]
-            selected_pos = next((p for p in active_positions if p.symbol == selected_symbol), None)
+            selected_trade_type = selected.split("(")[1].split(" @ ")[0]
+            selected_entry_str = selected.split(" @ ")[1].rstrip(")")
+            
+            selected_pos = next((p for p in active_positions 
+                               if p.symbol == selected_symbol 
+                               and p.trade_type == selected_trade_type
+                               and format_price(p.entry_price) == selected_entry_str), None)
             
             if selected_pos:
                 st.info(f"📊 Position: **{selected_pos.symbol}** | Entry: **{format_price(selected_pos.entry_price)}** | Current: **{format_price(selected_pos.current_price)}**" if selected_pos.current_price else f"📊 Position: **{selected_pos.symbol}** | Entry: **{format_price(selected_pos.entry_price)}**")
@@ -1070,14 +1076,14 @@ elif menu == "Position Tracker":
             )
             
             if st.button("Close Position", type="primary"):
-                symbol = selected.split(" (")[0]
                 monitor = PositionMonitor()
                 result = monitor.close_position(
-                    symbol, 
+                    selected_pos.symbol, 
                     exit_price, 
                     outcome,
                     exit_type=exit_type,
-                    notes=notes if notes else None
+                    notes=notes if notes else None,
+                    entry_price=selected_pos.entry_price
                 )
                 
                 if result['success']:
