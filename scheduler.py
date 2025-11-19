@@ -7,8 +7,8 @@ from divergence_analytics import update_all_divergence_stats
 
 class BackgroundScheduler:
     def __init__(self):
-        self.monitor = PositionMonitor()
         self.ml_engine = MLTradingEngine()
+        self.monitor = PositionMonitor(ml_engine=self.ml_engine)
         self.is_running = False
         self.thread = None
         self.last_analytics_run = None
