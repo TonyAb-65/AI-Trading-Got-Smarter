@@ -6,10 +6,15 @@ from technical_indicators import TechnicalIndicators, calculate_support_resistan
 from whale_tracker import WhaleTracker
 from divergence_resolver import resolve_active_divergences
 import json
+import numpy as np
 
 class PositionMonitor:
-    def __init__(self):
+    def __init__(self, ml_engine=None):
         self.check_interval_minutes = 15
+        self.ml_engine = ml_engine  # Inject MLEngine for profile similarity calculation
+        
+        # Key indicators for quick Tier 0 check
+        self.quick_check_indicators = ['RSI', 'MACD', 'Stochastic_%K', 'ADX', 'MFI']
         
     def check_active_positions(self):
         session = get_session()
@@ -76,6 +81,12 @@ class PositionMonitor:
             monitoring_alerts = self._check_tight_monitoring(
                 position, current_price, indicators, signals
             )
+            
+            # Add profile comparison alerts (early warning system)
+            profile_alerts = self._check_profile_deviation(
+                position, indicators
+            )
+            monitoring_alerts.extend(profile_alerts)
             
             # Get historical trend context for duration-aware monitoring
             trend_context = tech_indicators.get_trend_context(position.symbol, position.market_type)
@@ -227,6 +238,128 @@ class PositionMonitor:
                 })
         
         return alerts
+    
+    def _check_profile_deviation(self, position, current_indicators):
+        """
+        Three-Tier Profile-Based Risk Management:
+        Tier 0: Quick difference check (exit early if no change detected)
+        Tier 1: Deep similarity using M1's proven normalization pipeline
+        Tier 2: Full M1 re-analysis if major deviation detected (similarity < 55%)
+        """
+        alerts = []
+        
+        # Check if we have entry snapshot
+        if not position.indicators_snapshot:
+            return alerts
+        
+        try:
+            entry_indicators = position.indicators_snapshot
+            
+            # ========== TIER 0: Quick Difference Check ==========
+            # Exit early if key indicators haven't changed significantly (>15%)
+            no_significant_change = True
+            for indicator in self.quick_check_indicators:
+                entry_val = entry_indicators.get(indicator)
+                current_val = current_indicators.get(indicator)
+                
+                if entry_val is not None and current_val is not None and entry_val != 0:
+                    pct_change = abs((current_val - entry_val) / entry_val) * 100
+                    if pct_change > 15:  # 15% change threshold
+                        no_significant_change = False
+                        break
+            
+            # Early exit: No significant changes detected
+            if no_significant_change:
+                return alerts  # Position stable - no deeper analysis needed
+            
+            # ========== TIER 1: Deep Profile Similarity (M1's Proven Method) ==========
+            if not self.ml_engine or not self.ml_engine.scaler_fitted:
+                # ML Engine not available - skip Tier 1 & 2
+                print("⚠️  ML Engine not available for profile similarity - using basic monitoring only")
+                return alerts
+            
+            # Use M1's proven normalization pipeline
+            try:
+                # Prepare and normalize entry profile
+                entry_features = self.ml_engine.prepare_features(entry_indicators, trade_type=None)
+                entry_features = entry_features.flatten()[1:]  # Skip trade_type feature
+                entry_normalized = self.ml_engine.scaler.transform(entry_features.reshape(1, -1)).flatten()
+                
+                # Prepare and normalize current profile
+                current_features = self.ml_engine.prepare_features(current_indicators, trade_type=None)
+                current_features = current_features.flatten()[1:]  # Skip trade_type feature
+                current_normalized = self.ml_engine.scaler.transform(current_features.reshape(1, -1)).flatten()
+                
+                # Calculate cosine similarity between normalized profiles
+                from sklearn.metrics.pairwise import cosine_similarity
+                similarity = cosine_similarity(
+                    entry_normalized.reshape(1, -1),
+                    current_normalized.reshape(1, -1)
+                )[0][0]
+                
+                similarity_pct = similarity * 100
+                print(f"📊 Profile Similarity (Entry vs Current): {similarity_pct:.1f}%")
+                
+                # Tier 1 Decision Thresholds
+                if similarity_pct >= 75:
+                    # High similarity - position stable
+                    return alerts
+                
+                elif similarity_pct >= 55:
+                    # Medium similarity - pattern weakening
+                    alerts.append({
+                        'type': 'PATTERN_WEAKENING',
+                        'severity': 'MEDIUM',
+                        'message': f"⚠️ Entry pattern weakening (similarity: {similarity_pct:.1f}%)",
+                        'recommendation': 'Monitor closely - Profile diverging from entry'
+                    })
+                    return alerts  # Don't proceed to Tier 2 yet
+                
+                # ========== TIER 2: Full M1 Re-Analysis (Major Deviation) ==========
+                # Similarity < 55% - Major deviation detected
+                print(f"🔍 Major profile deviation ({similarity_pct:.1f}%) - Running full M1 re-analysis...")
+                
+                # Run full M1 prediction on current market conditions
+                m1_result = self.ml_engine.predict(current_indicators)
+                
+                if m1_result:
+                    m1_signal = m1_result.get('signal', 'HOLD')
+                    m1_confidence = m1_result.get('confidence', 0)
+                    
+                    # Check if M1 recommendation reversed (opposite of entry direction)
+                    if position.trade_type == 'LONG' and m1_signal == 'SHORT':
+                        alerts.append({
+                            'type': 'PATTERN_REVERSED',
+                            'severity': 'HIGH',
+                            'message': f"🔴 PATTERN REVERSED - M1 now recommends SHORT ({m1_confidence:.1f}% confidence)",
+                            'recommendation': 'EXIT NOW - Market conditions completely reversed'
+                        })
+                    elif position.trade_type == 'SHORT' and m1_signal == 'LONG':
+                        alerts.append({
+                            'type': 'PATTERN_REVERSED',
+                            'severity': 'HIGH',
+                            'message': f"🔴 PATTERN REVERSED - M1 now recommends LONG ({m1_confidence:.1f}% confidence)",
+                            'recommendation': 'EXIT NOW - Market conditions completely reversed'
+                        })
+                    else:
+                        # M1 still agrees with direction, but profile has deviated significantly
+                        alerts.append({
+                            'type': 'PATTERN_WEAKENING',
+                            'severity': 'MEDIUM',
+                            'message': f"⚠️ Profile deviated ({similarity_pct:.1f}%) but M1 still {m1_signal} ({m1_confidence:.1f}%)",
+                            'recommendation': 'Consider tightening stops - Conditions changed but direction holds'
+                        })
+                
+            except Exception as e:
+                print(f"Error in Tier 1/2 analysis: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            return alerts
+            
+        except Exception as e:
+            print(f"Profile comparison error: {e}")
+            return alerts
     
     def _generate_recommendation(self, position, current_price, pnl_percentage, 
                                  signals, support_levels, resistance_levels,
