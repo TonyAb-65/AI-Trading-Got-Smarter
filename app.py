@@ -30,11 +30,24 @@ def initialize_database():
 @st.cache_resource
 def get_ml_engine():
     """Get shared ML Engine instance for profile similarity calculations"""
-    return MLTradingEngine()
+    ml_engine = MLTradingEngine()
+    
+    # Build profiles immediately to ensure scaler is fitted for position monitoring
+    try:
+        profiles = ml_engine.build_trade_profiles()
+        if profiles:
+            print(f"✅ ML Engine initialized with {len([p for p in profiles.values() if p is not None])} profiles")
+        else:
+            print("ℹ️  ML Engine created but profiles not yet available (need 5+ trades)")
+    except Exception as e:
+        print(f"⚠️  Error building profiles during initialization: {e}")
+    
+    return ml_engine
 
 @st.cache_resource
 def start_background_scheduler():
-    scheduler = get_scheduler()
+    ml_engine = get_ml_engine()  # Get shared ML Engine first
+    scheduler = get_scheduler(ml_engine)  # Pass it to scheduler
     scheduler.start()
     return scheduler
 
