@@ -422,6 +422,45 @@ class MLTradingEngine:
         finally:
             session.close()
     
+    def get_m2_advisory_reason(self, indicators: dict, direction: str) -> str:
+        """
+        Generate specific reason why M2 is warning about entry timing
+        """
+        reasons = []
+        
+        # Check divergence status
+        has_divergence = indicators.get('has_divergence', False)
+        candles_elapsed = indicators.get('candles_elapsed', 0)
+        
+        if not has_divergence:
+            reasons.append("No divergence detected")
+        elif candles_elapsed > 10:
+            reasons.append(f"Late entry ({candles_elapsed} candles after divergence)")
+        
+        # Check trend strength
+        adx = indicators.get('ADX', 0)
+        if adx > 25:
+            # Check trend direction
+            di_plus = indicators.get('DI+', 0)
+            di_minus = indicators.get('DI-', 0)
+            
+            if direction == 'LONG' and di_minus > di_plus:
+                reasons.append("Trend still falling")
+            elif direction == 'SHORT' and di_plus > di_minus:
+                reasons.append("Trend still rising")
+        
+        # Check for clear reversal signal
+        obv_signal = indicators.get('obv_signal', 'neutral')
+        if direction == 'LONG' and 'falling' in obv_signal.lower():
+            reasons.append("No clear reversal signal")
+        elif direction == 'SHORT' and 'rising' in obv_signal.lower():
+            reasons.append("No clear reversal signal")
+        
+        if reasons:
+            return " - ".join(reasons) + " - wait for confirmation"
+        else:
+            return "Entry timing may be suboptimal - consider waiting"
+    
     def assess_entry_quality(self, indicators, m1_confidence, predicted_direction):
         """
         M2 meta-model: Assess whether this trade is worth taking.
@@ -633,7 +672,9 @@ class MLTradingEngine:
                     # M2 provides advisory warnings but does NOT block the signal
                     if entry_quality < 0.5:
                         reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
-                        reasons.append("⚠️ M2 Advisory: Entry timing may be suboptimal - consider waiting")
+                        # Generate specific advisory reason based on market conditions
+                        advisory_reason = self.get_m2_advisory_reason(indicators, 'LONG')
+                        reasons.append(f"⚠️ M2 Advisory: {advisory_reason}")
                     else:
                         reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
                 else:
@@ -660,7 +701,9 @@ class MLTradingEngine:
                     # M2 provides advisory warnings but does NOT block the signal
                     if entry_quality < 0.5:
                         reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
-                        reasons.append("⚠️ M2 Advisory: Entry timing may be suboptimal - consider waiting")
+                        # Generate specific advisory reason based on market conditions
+                        advisory_reason = self.get_m2_advisory_reason(indicators, 'SHORT')
+                        reasons.append(f"⚠️ M2 Advisory: {advisory_reason}")
                     else:
                         reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
                 else:
