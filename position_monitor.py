@@ -476,28 +476,11 @@ class PositionMonitor:
                     'reason': 'Cutting losses - trend against position'
                 }
         
-        hold_reasons = []
-        
-        # Provide detailed signal breakdown for HOLD positions
-        if position.trade_type == 'LONG':
-            if bullish_count > bearish_count:
-                hold_reasons.append(f"Trend still bullish ({bullish_count} bullish vs {bearish_count} bearish)")
-            elif bullish_count == bearish_count:
-                hold_reasons.append(f"Mixed signals ({bullish_count} bullish, {bearish_count} bearish) - holding position")
-            else:
-                hold_reasons.append(f"Weakening trend ({bearish_count} bearish vs {bullish_count} bullish) - consider exit soon")
-        
-        elif position.trade_type == 'SHORT':
-            if bearish_count > bullish_count:
-                hold_reasons.append(f"Trend still bearish ({bearish_count} bearish vs {bullish_count} bullish)")
-            elif bearish_count == bullish_count:
-                hold_reasons.append(f"Mixed signals ({bearish_count} bearish, {bullish_count} bullish) - holding position")
-            else:
-                hold_reasons.append(f"Weakening trend ({bullish_count} bullish vs {bearish_count} bearish) - consider exit soon")
-        
+        # HOLD - Position stable (no exit conditions triggered)
+        # Three-tier profile monitoring provides advanced pattern analysis
         return {
             'action': 'HOLD',
-            'reason': ', '.join(hold_reasons) if hold_reasons else 'Position looks healthy'
+            'reason': 'Position looks healthy - monitoring continues'
         }
     
     def add_position(self, symbol, market_type, trade_type, entry_price, 
