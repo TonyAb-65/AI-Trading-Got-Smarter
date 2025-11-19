@@ -1,10 +1,10 @@
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import xgboost as xgb
 import joblib
 import os
 import base64
@@ -14,10 +14,10 @@ from database import get_session, Trade, ModelPerformance, IndicatorPerformance,
 
 class MLTradingEngine:
     def __init__(self):
-        self.rf_model = None
-        self.xgb_model = None
         self.scaler = StandardScaler()
+        self.scaler_fitted = False
         self.feature_columns = []
+        self.m2_model = None  # Meta-labeling model for entry quality
         
         self.indicator_weights = {
             'RSI': 2.0,
@@ -30,8 +30,9 @@ class MLTradingEngine:
         }
         
         self._load_indicator_weights()
+        self._load_m2_model()  # Load M2 model if exists
     
-    def prepare_features(self, indicators):
+    def prepare_features(self, indicators, trade_type=None):
         features = []
         feature_names = [
             'RSI', 'MACD', 'MACD_hist', 'Stoch_K', 'Stoch_D',
@@ -39,6 +40,14 @@ class MLTradingEngine:
             'current_price', 'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
             'BB_upper', 'BB_middle', 'BB_lower', 'ATR', 'volume', 'Volume_SMA'
         ]
+        
+        # Add trade direction as first feature (1.0 for LONG, -1.0 for SHORT, 0.0 for unknown)
+        if trade_type == 'LONG':
+            features.append(1.0)
+        elif trade_type == 'SHORT':
+            features.append(-1.0)
+        else:
+            features.append(0.0)
         
         for feat in feature_names:
             val = indicators.get(feat)
@@ -126,7 +135,66 @@ class MLTradingEngine:
         features.append(support_strength)
         features.append(resistance_strength)
         
-        self.feature_columns = feature_names + [
+        # Divergence Timing Intelligence Features (NEW - helps M2 assess entry timing)
+        from divergence_analytics import get_divergence_timing_info
+        from divergence_resolver import TIMEFRAME_MINUTES
+        
+        # Check for any active divergence in indicators
+        has_divergence = 0.0
+        timing_candles_elapsed = 0.0
+        timing_avg_resolution = 0.0
+        timing_speed_encoded = 0.0  # -1=fast, 0=actionable, 1=slow
+        timing_success_rate = 0.0
+        
+        timeframe = indicators.get('timeframe', '1H')
+        detected_at = indicators.get('divergence_detected_at')  # Timestamp when divergence was detected
+        
+        # Check each indicator for divergences
+        for ind_name in ['RSI', 'MFI', 'Stochastic', 'OBV']:
+            ind_ctx = trend_context.get(ind_name, {})
+            div = ind_ctx.get('divergence', 'none')
+            
+            if div != 'none':
+                has_divergence = 1.0
+                
+                # Calculate candles elapsed if we have detection time
+                if detected_at:
+                    try:
+                        from datetime import datetime
+                        if isinstance(detected_at, str):
+                            detected_time = datetime.fromisoformat(detected_at.replace('Z', '+00:00'))
+                        else:
+                            detected_time = detected_at
+                        
+                        time_elapsed = datetime.utcnow() - detected_time
+                        timeframe_minutes = TIMEFRAME_MINUTES.get(timeframe, 60)
+                        timing_candles_elapsed = time_elapsed.total_seconds() / 60 / timeframe_minutes
+                    except:
+                        timing_candles_elapsed = 0.0
+                
+                # Get historical timing intelligence for this divergence pattern
+                timing_info = get_divergence_timing_info(ind_name, timeframe, div)
+                if timing_info:
+                    timing_avg_resolution = timing_info['avg_candles']
+                    timing_success_rate = timing_info['success_rate'] / 100.0  # Normalize to 0-1
+                    
+                    # Encode speed class
+                    if timing_info['speed_class'] == 'fast':
+                        timing_speed_encoded = -1.0
+                    elif timing_info['speed_class'] == 'actionable':
+                        timing_speed_encoded = 0.0
+                    elif timing_info['speed_class'] == 'slow':
+                        timing_speed_encoded = 1.0
+                
+                break  # Use first divergence found
+        
+        features.append(has_divergence)
+        features.append(float(timing_candles_elapsed))
+        features.append(float(timing_avg_resolution))
+        features.append(timing_speed_encoded)
+        features.append(timing_success_rate)
+        
+        self.feature_columns = ['trade_type'] + feature_names + [
             'price_vs_sma20', 'price_vs_sma50', 'macd_divergence', 'volume_ratio',
             'rsi_duration', 'rsi_slope', 'rsi_divergence',
             'stoch_duration', 'stoch_slope', 'stoch_divergence',
@@ -134,160 +202,405 @@ class MLTradingEngine:
             'obv_slope', 'obv_divergence',
             'support_distance_pct', 'resistance_distance_pct',
             'at_support_zone', 'at_resistance_zone',
-            'support_strength', 'resistance_strength'
+            'support_strength', 'resistance_strength',
+            'div_has_active', 'div_candles_elapsed', 'div_avg_resolution',
+            'div_speed_class', 'div_success_rate'
         ]
         
         return np.array(features).reshape(1, -1)
     
-    def train_models(self, min_trades=10):
+    def build_trade_profiles(self):
+        """
+        Build average indicator profiles from closed trades with feature normalization:
+        - Winning LONG profile
+        - Winning SHORT profile
+        - Losing LONG profile
+        - Losing SHORT profile
+        """
         session = get_session()
         
         try:
             trades = session.query(Trade).filter(
                 Trade.exit_price.isnot(None),
-                Trade.outcome.isnot(None)
+                Trade.outcome.isnot(None),
+                Trade.indicators_at_entry.isnot(None)
+            ).all()
+            
+            if len(trades) < 5:
+                print(f"Not enough trades to build profiles. Need at least 5, have {len(trades)}")
+                return None
+            
+            # STEP 1: Collect ALL features from ALL trades to fit scaler
+            all_features = []
+            trade_features_map = {}
+            
+            for trade in trades:
+                try:
+                    features = self.prepare_features(trade.indicators_at_entry, trade_type=None)
+                    features_flat = features.flatten()[1:]  # Skip trade_type feature
+                    all_features.append(features_flat)
+                    trade_features_map[trade.id] = features_flat
+                except Exception as feature_error:
+                    print(f"⚠️  Skipping trade {trade.id} - error extracting features: {feature_error}")
+                    continue
+            
+            if len(all_features) < 5:
+                print(f"Not enough valid feature sets. Need at least 5, have {len(all_features)}")
+                return None
+            
+            # STEP 2: Fit scaler on ALL features (ensures consistent normalization)
+            all_features_array = np.array(all_features)
+            self.scaler.fit(all_features_array)
+            self.scaler_fitted = True
+            print(f"✅ Scaler fitted on {len(all_features)} trade feature sets")
+            
+            # STEP 3: Separate trades into 4 categories
+            win_long_trades = [t for t in trades if t.outcome.upper() == 'WIN' and t.trade_type == 'LONG']
+            win_short_trades = [t for t in trades if t.outcome.upper() == 'WIN' and t.trade_type == 'SHORT']
+            loss_long_trades = [t for t in trades if t.outcome.upper() == 'LOSS' and t.trade_type == 'LONG']
+            loss_short_trades = [t for t in trades if t.outcome.upper() == 'LOSS' and t.trade_type == 'SHORT']
+            
+            print(f"📊 Building normalized profiles from {len(trades)} trades:")
+            print(f"   Winning LONG: {len(win_long_trades)}, Winning SHORT: {len(win_short_trades)}")
+            print(f"   Losing LONG: {len(loss_long_trades)}, Losing SHORT: {len(loss_short_trades)}")
+            
+            # STEP 4: Build normalized average profile for each category
+            profiles = {}
+            
+            for category, category_trades in [
+                ('win_long', win_long_trades),
+                ('win_short', win_short_trades),
+                ('loss_long', loss_long_trades),
+                ('loss_short', loss_short_trades)
+            ]:
+                if len(category_trades) > 0:
+                    # Get normalized features for this category
+                    normalized_features_list = []
+                    for trade in category_trades:
+                        if trade.id in trade_features_map:
+                            # Transform using fitted scaler
+                            features_normalized = self.scaler.transform(trade_features_map[trade.id].reshape(1, -1))
+                            normalized_features_list.append(features_normalized.flatten())
+                    
+                    # Calculate average normalized profile
+                    if len(normalized_features_list) > 0:
+                        profiles[category] = np.mean(normalized_features_list, axis=0)
+                        print(f"   ✅ {category}: {len(normalized_features_list)} normalized trades")
+                    else:
+                        profiles[category] = None
+                        print(f"   ⚠️  {category}: No valid feature data")
+                else:
+                    profiles[category] = None
+                    print(f"   ⚠️  {category}: No trades in category")
+            
+            return profiles
+            
+        except Exception as e:
+            print(f"❌ Error building profiles: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        finally:
+            session.close()
+    
+    def calculate_similarity(self, current_indicators, profile):
+        """Calculate cosine similarity between normalized current indicators and a profile"""
+        if profile is None:
+            return 0.0
+        
+        try:
+            # Prepare current features (without trade_type)
+            current_features = self.prepare_features(current_indicators, trade_type=None)
+            current_features = current_features.flatten()[1:]  # Skip trade_type feature
+            
+            # Normalize current features using fitted scaler
+            if self.scaler_fitted:
+                current_features = self.scaler.transform(current_features.reshape(1, -1)).flatten()
+            else:
+                print("⚠️  Scaler not fitted - using raw features (may be inaccurate)")
+            
+            # Reshape for cosine_similarity
+            current_features = current_features.reshape(1, -1)
+            profile = profile.reshape(1, -1)
+            
+            # Calculate cosine similarity
+            similarity = cosine_similarity(current_features, profile)[0][0]
+            
+            return float(similarity)
+            
+        except Exception as e:
+            print(f"Error calculating similarity: {e}")
+            return 0.0
+    
+    def train_meta_model(self, min_trades=10):
+        """
+        Train M2 meta-labeling model to assess entry quality.
+        Learns which predicted trades are worth taking based on full indicator profile.
+        
+        Returns:
+            True if training successful, False otherwise
+        """
+        session = get_session()
+        
+        try:
+            # Get closed trades with full indicator data
+            trades = session.query(Trade).filter(
+                Trade.exit_price.isnot(None),
+                Trade.outcome.isnot(None),
+                Trade.indicators_at_entry.isnot(None)
             ).all()
             
             if len(trades) < min_trades:
-                print(f"Not enough trades for training. Need {min_trades}, have {len(trades)}")
+                print(f"⚠️  Not enough trades for M2 training. Need {min_trades}, have {len(trades)}")
+                self.m2_model = None
                 return False
             
-            X = []
-            y = []
+            # Prepare training data
+            X_train = []
+            y_train = []
             
             for trade in trades:
-                if trade.indicators_at_entry:
-                    features = self.prepare_features(trade.indicators_at_entry)
-                    X.append(features.flatten())
-                    y.append(1 if trade.outcome == 'win' else 0)
+                try:
+                    # Get features at entry (all 43 indicators)
+                    features = self.prepare_features(trade.indicators_at_entry, trade_type=trade.trade_type)
+                    
+                    # Label: 1 if trade won, 0 if lost
+                    label = 1 if trade.outcome.upper() == 'WIN' else 0
+                    
+                    X_train.append(features.flatten())
+                    y_train.append(label)
+                    
+                except Exception as e:
+                    print(f"⚠️  Skipping trade {trade.id} in M2 training: {e}")
+                    continue
             
-            if len(X) < min_trades:
-                print("Not enough valid feature data")
+            if len(X_train) < min_trades:
+                print(f"⚠️  Not enough valid trades for M2. Need {min_trades}, have {len(X_train)}")
+                self.m2_model = None
                 return False
             
-            X = np.array(X)
-            y = np.array(y)
+            X_train = np.array(X_train)
+            y_train = np.array(y_train)
             
-            X_scaled = self.scaler.fit_transform(X)
+            # Train XGBoost classifier for entry quality
+            print(f"🔧 Training M2 meta-model on {len(X_train)} trades...")
             
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42, stratify=y if len(np.unique(y)) > 1 else None
-            )
-            
-            self.rf_model = RandomForestClassifier(
+            self.m2_model = xgb.XGBClassifier(
                 n_estimators=100,
-                max_depth=10,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                random_state=42,
-                class_weight='balanced'
-            )
-            self.rf_model.fit(X_train, y_train)
-            
-            self.xgb_model = XGBClassifier(
-                n_estimators=100,
-                max_depth=6,
+                max_depth=4,
                 learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
                 random_state=42,
                 eval_metric='logloss'
             )
-            self.xgb_model.fit(X_train, y_train)
             
-            rf_pred = self.rf_model.predict(X_test)
-            xgb_pred = self.xgb_model.predict(X_test)
+            self.m2_model.fit(X_train, y_train)
             
-            rf_metrics = {
-                'accuracy': accuracy_score(y_test, rf_pred),
-                'precision': precision_score(y_test, rf_pred, zero_division=0),
-                'recall': recall_score(y_test, rf_pred, zero_division=0),
-                'f1': f1_score(y_test, rf_pred, zero_division=0)
-            }
+            # Calculate accuracy
+            y_pred = self.m2_model.predict(X_train)
+            accuracy = accuracy_score(y_train, y_pred)
             
-            xgb_metrics = {
-                'accuracy': accuracy_score(y_test, xgb_pred),
-                'precision': precision_score(y_test, xgb_pred, zero_division=0),
-                'recall': recall_score(y_test, xgb_pred, zero_division=0),
-                'f1': f1_score(y_test, xgb_pred, zero_division=0)
-            }
+            win_count = sum(y_train)
+            loss_count = len(y_train) - win_count
             
-            self._save_models()
-            self._save_performance_metrics('RandomForest', rf_metrics, len(trades))
-            self._save_performance_metrics('XGBoost', xgb_metrics, len(trades))
+            print(f"✅ M2 meta-model trained successfully!")
+            print(f"   Training accuracy: {accuracy:.1%}")
+            print(f"   Win examples: {win_count}, Loss examples: {loss_count}")
             
-            print(f"Models trained successfully on {len(trades)} trades")
-            print(f"RF Accuracy: {rf_metrics['accuracy']:.2%}, XGB Accuracy: {xgb_metrics['accuracy']:.2%}")
+            # Save M2 model to database for persistence
+            self._save_m2_model()
             
             return True
             
         except Exception as e:
-            print(f"Error training models: {e}")
+            print(f"❌ Error training M2 meta-model: {e}")
+            import traceback
+            traceback.print_exc()
+            self.m2_model = None
+            return False
+        finally:
+            session.close()
+    
+    def assess_entry_quality(self, indicators, m1_confidence, predicted_direction):
+        """
+        M2 meta-model: Assess whether this trade is worth taking.
+        
+        Args:
+            indicators: Current market indicators (all 43)
+            m1_confidence: M1 pattern matching confidence (0-1)
+            predicted_direction: 'LONG' or 'SHORT' from M1
+        
+        Returns:
+            entry_quality: Score from 0.0 to 1.0, or None if M2 not trained
+                - 0.0-0.3: Poor entry (likely late or unfavorable conditions)
+                - 0.3-0.6: Moderate entry quality
+                - 0.6-1.0: Good entry quality
+                - None: M2 not available yet (need 10+ trades)
+        """
+        # If M2 not trained, return None (no filtering)
+        if self.m2_model is None:
+            print("⚠️  M2 model not available - need 10+ trades to train")
+            return None
+        
+        try:
+            # Prepare features with predicted direction
+            features = self.prepare_features(indicators, trade_type=predicted_direction)
+            features = features.reshape(1, -1)
+            
+            # Get probability of winning trade
+            win_probability = self.m2_model.predict_proba(features)[0][1]
+            
+            return float(win_probability)
+            
+        except Exception as e:
+            print(f"⚠️  Error in M2 assessment: {e}")
+            return 1.0  # Fallback to neutral
+    
+    def train_models(self, min_trades=5):
+        """
+        Profile-based learning system:
+        Rebuilds winning/losing profiles and calculates indicator accuracy
+        """
+        session = get_session()
+        
+        try:
+            trades = session.query(Trade).filter(
+                Trade.exit_price.isnot(None),
+                Trade.outcome.isnot(None),
+                Trade.indicators_at_entry.isnot(None)
+            ).all()
+            
+            if len(trades) < min_trades:
+                print(f"Not enough trades for profile building. Need {min_trades}, have {len(trades)}")
+                return False
+            
+            # Build profiles
+            profiles = self.build_trade_profiles()
+            
+            if profiles is None:
+                print("Failed to build profiles")
+                return False
+            
+            # Calculate overall accuracy based on profile matching
+            # For each trade, predict using profiles and check if it matches actual outcome
+            correct_predictions = 0
+            total_predictions = 0
+            
+            for trade in trades:
+                if not trade.indicators_at_entry:
+                    continue
+                
+                # Get similarity scores
+                sim_win_long = self.calculate_similarity(trade.indicators_at_entry, profiles.get('win_long'))
+                sim_win_short = self.calculate_similarity(trade.indicators_at_entry, profiles.get('win_short'))
+                sim_loss_long = self.calculate_similarity(trade.indicators_at_entry, profiles.get('loss_long'))
+                sim_loss_short = self.calculate_similarity(trade.indicators_at_entry, profiles.get('loss_short'))
+                
+                # Predict direction based on similarity
+                long_score = sim_win_long + sim_loss_short
+                short_score = sim_win_short + sim_loss_long
+                
+                predicted_direction = 'LONG' if long_score > short_score else 'SHORT'
+                
+                # Check if prediction matches actual trade (case-insensitive for outcome)
+                was_correct = (predicted_direction == trade.trade_type and trade.outcome.upper() == 'WIN') or \
+                             (predicted_direction != trade.trade_type and trade.outcome.upper() == 'LOSS')
+                
+                if was_correct:
+                    correct_predictions += 1
+                total_predictions += 1
+            
+            overall_accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0.0
+            
+            # Deactivate all old models (including legacy RandomForest/XGBoost)
+            session.query(ModelPerformance).update({'is_active': False})
+            session.commit()
+            
+            # Save overall performance metrics
+            self._save_performance_metrics('ProfileMatching', {
+                'accuracy': overall_accuracy,
+                'precision': overall_accuracy,
+                'recall': overall_accuracy,
+                'f1': overall_accuracy
+            }, len(trades))
+            
+            print(f"✅ Profile-based learning complete!")
+            print(f"   Analyzed {len(trades)} trades")
+            print(f"   Overall accuracy: {overall_accuracy:.1%}")
+            print(f"   Win LONG examples: {len([t for t in trades if t.outcome.upper()=='WIN' and t.trade_type=='LONG'])}")
+            print(f"   Win SHORT examples: {len([t for t in trades if t.outcome.upper()=='WIN' and t.trade_type=='SHORT'])}")
+            print(f"   Loss LONG examples: {len([t for t in trades if t.outcome.upper()=='LOSS' and t.trade_type=='LONG'])}")
+            print(f"   Loss SHORT examples: {len([t for t in trades if t.outcome.upper()=='LOSS' and t.trade_type=='SHORT'])}")
+            
+            # Train M2 meta-labeling model (entry quality filter)
+            print(f"\n🔧 Training M2 meta-labeling model...")
+            self.train_meta_model(min_trades=10)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error in profile-based learning: {e}")
+            import traceback
+            traceback.print_exc()
             return False
         finally:
             session.close()
     
     def predict(self, indicators):
-        models_available = False
-        if self.rf_model is None or self.xgb_model is None:
-            models_available = self._load_models()
-        else:
-            models_available = True
-        
         rule_based_result = self._rule_based_prediction(indicators)
         
-        if not models_available:
-            return rule_based_result
-        
         try:
-            features = self.prepare_features(indicators)
+            # Build profiles from historical trades
+            profiles = self.build_trade_profiles()
             
-            # Safety check: Ensure scaler is fitted before using
-            if not hasattr(self.scaler, 'n_features_in_'):
-                print("⚠️  Scaler not fitted - using rule-based prediction")
+            if profiles is None:
+                print("⚠️  Not enough trades to build profiles - using rule-based prediction only")
                 return rule_based_result
             
-            # Feature dimension compatibility check
-            expected_features = self.scaler.n_features_in_
-            actual_features = features.shape[1]
+            # Calculate similarity to each profile
+            sim_win_long = self.calculate_similarity(indicators, profiles.get('win_long'))
+            sim_win_short = self.calculate_similarity(indicators, profiles.get('win_short'))
+            sim_loss_long = self.calculate_similarity(indicators, profiles.get('loss_long'))
+            sim_loss_short = self.calculate_similarity(indicators, profiles.get('loss_short'))
             
-            if expected_features != actual_features:
-                print(f"⚠️  Model dimension mismatch: Expected {expected_features} features, got {actual_features}")
-                print(f"   Models were trained with old feature set - invalidating and using rule-based prediction")
-                print(f"   System will retrain automatically when enough new trades accumulate (10+ trades needed)")
-                
-                # Invalidate old models and reinitialize scaler for future training
-                self.rf_model = None
-                self.xgb_model = None
-                self.scaler = StandardScaler()  # Fresh scaler for retraining with new features
-                
-                # Delete outdated models from database
-                try:
-                    session = get_session()
-                    deleted_count = session.query(MLModel).delete()
-                    session.commit()
-                    session.close()
-                    if deleted_count > 0:
-                        print(f"   ✅ Deleted {deleted_count} outdated models from database")
-                except Exception as e:
-                    print(f"   ⚠️  Error deleting outdated models: {e}")
-                    if 'session' in locals():
-                        session.rollback()
-                        session.close()
-                
-                return rule_based_result
+            print(f"📊 Pattern Similarity Scores:")
+            print(f"   Win LONG: {sim_win_long:.3f}, Win SHORT: {sim_win_short:.3f}")
+            print(f"   Loss LONG: {sim_loss_long:.3f}, Loss SHORT: {sim_loss_short:.3f}")
             
-            features_scaled = self.scaler.transform(features)
+            # Determine ML recommendation based on pattern matching
+            # If similar to winning LONG → go LONG
+            # If similar to winning SHORT → go SHORT  
+            # If similar to losing LONG → go SHORT (opposite)
+            # If similar to losing SHORT → go LONG (opposite)
             
-            rf_proba = self.rf_model.predict_proba(features_scaled)[0]
-            xgb_proba = self.xgb_model.predict_proba(features_scaled)[0]
+            long_score = sim_win_long + sim_loss_short  # Win LONG + Loss SHORT both favor LONG
+            short_score = sim_win_short + sim_loss_long  # Win SHORT + Loss LONG both favor SHORT
             
-            ensemble_proba = (rf_proba + xgb_proba) / 2
-            ml_win_probability = ensemble_proba[1]
+            # Ensure scores are non-negative (cosine similarity can be negative)
+            # Shift both scores to positive range by adding the minimum
+            min_score = min(long_score, short_score)
+            if min_score < 0:
+                long_score = long_score - min_score  # Shift to positive
+                short_score = short_score - min_score
             
+            # Normalize ML scores to 0-1 range
+            total_score = long_score + short_score
+            if total_score > 0:
+                ml_long_probability = long_score / total_score
+                ml_short_probability = short_score / total_score
+            else:
+                ml_long_probability = 0.5
+                ml_short_probability = 0.5
+            
+            # Get rule-based score
             rule_score = rule_based_result['bullish_score'] - rule_based_result['bearish_score']
             rule_normalized = (rule_score + 20) / 40
             rule_normalized = max(0, min(1, rule_normalized))
             
-            final_probability = (ml_win_probability * 0.7) + (rule_normalized * 0.3)
+            # Combine ML pattern matching (50%) with rule-based signals (50%)
+            long_final_prob = (ml_long_probability * 0.5) + (rule_normalized * 0.5)
+            short_final_prob = (ml_short_probability * 0.5) + ((1 - rule_normalized) * 0.5)
             
             current_price = indicators.get('current_price', 0)
             atr = indicators.get('ATR', current_price * 0.02)
@@ -295,27 +608,75 @@ class MLTradingEngine:
             
             reasons = rule_based_result.get('reasons', [])
             
-            if final_probability > 0.6:
+            # Calculate margin between directions
+            prob_difference = abs(long_final_prob - short_final_prob)
+            
+            # Choose direction with higher probability
+            # Recommend if: (1) >60% absolute, OR (2) wins by >8% margin AND >52%
+            if long_final_prob > short_final_prob and (long_final_prob > 0.6 or (prob_difference > 0.08 and long_final_prob > 0.52)):
                 signal = 'LONG'
                 entry_price = current_price
                 stop_loss = current_price - (2 * min_distance)
                 take_profit = current_price + (3 * min_distance)
                 recommendation = f"Strong LONG signal. Enter at {entry_price:.2f}"
-                reasons.append(f"ML models: {ml_win_probability*100:.1f}%, Weighted rules: {rule_normalized*100:.1f}%, Final: {final_probability*100:.1f}%")
-            elif final_probability < 0.4:
+                reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
+                final_probability = long_final_prob
+                ml_win_probability = ml_long_probability
+                
+                # M2 Entry Quality Assessment (Advisory Only - Does Not Block)
+                entry_quality = self.assess_entry_quality(indicators, long_final_prob, 'LONG')
+                
+                if entry_quality is not None:
+                    print(f"🎯 M2 Entry Quality: {entry_quality:.1%}")
+                    
+                    # M2 provides advisory warnings but does NOT block the signal
+                    if entry_quality < 0.5:
+                        reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
+                        reasons.append("⚠️ M2 Advisory: Entry timing may be suboptimal - consider waiting")
+                    else:
+                        reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
+                else:
+                    # M2 not available - proceed without advisory
+                    reasons.append("ℹ️ M2 quality filter not yet available (need 10+ trades to train)")
+                
+            elif short_final_prob > long_final_prob and (short_final_prob > 0.6 or (prob_difference > 0.08 and short_final_prob > 0.52)):
                 signal = 'SHORT'
                 entry_price = current_price
                 stop_loss = current_price + (2 * min_distance)
                 take_profit = current_price - (3 * min_distance)
                 recommendation = f"Strong SHORT signal. Enter at {entry_price:.2f}"
-                reasons.append(f"ML models: {(1-ml_win_probability)*100:.1f}%, Weighted rules: {(1-rule_normalized)*100:.1f}%, Final: {(1-final_probability)*100:.1f}%")
+                reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
+                final_probability = short_final_prob
+                ml_win_probability = ml_short_probability
+                
+                # M2 Entry Quality Assessment (Advisory Only - Does Not Block)
+                entry_quality = self.assess_entry_quality(indicators, short_final_prob, 'SHORT')
+                
+                if entry_quality is not None:
+                    print(f"🎯 M2 Entry Quality: {entry_quality:.1%}")
+                    
+                    # M2 provides advisory warnings but does NOT block the signal
+                    if entry_quality < 0.5:
+                        reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
+                        reasons.append("⚠️ M2 Advisory: Entry timing may be suboptimal - consider waiting")
+                    else:
+                        reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
+                else:
+                    # M2 not available - proceed without advisory
+                    reasons.append("ℹ️ M2 quality filter not yet available (need 10+ trades to train)")
+                
             else:
                 signal = 'HOLD'
                 entry_price = None
                 stop_loss = None
                 take_profit = None
                 recommendation = "No clear signal. Wait for better opportunity."
-                reasons.append(f"Hybrid confidence below threshold (final: {final_probability*100:.1f}%)")
+                reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
+                final_probability = max(long_final_prob, short_final_prob)
+                ml_win_probability = max(ml_long_probability, ml_short_probability)
             
             return {
                 'signal': signal,
@@ -325,11 +686,10 @@ class MLTradingEngine:
                 'entry_price': round(entry_price, 2) if entry_price else None,
                 'stop_loss': round(stop_loss, 2) if stop_loss else None,
                 'take_profit': round(take_profit, 2) if take_profit else None,
-                'rf_confidence': round(rf_proba[1] * 100, 2),
-                'xgb_confidence': round(xgb_proba[1] * 100, 2),
                 'ml_probability': round(ml_win_probability * 100, 2),
                 'rule_probability': round(rule_normalized * 100, 2),
-                'method': 'hybrid',
+                'm2_entry_quality': round(entry_quality * 100, 2) if (entry_quality is not None and 'entry_quality' in locals()) else None,
+                'method': 'profile_matching',
                 'reasons': reasons
             }
             
@@ -343,76 +703,6 @@ class MLTradingEngine:
                 'stop_loss': None,
                 'take_profit': None
             }
-    
-    def _save_models(self):
-        try:
-            session = get_session()
-            
-            def serialize_model(model):
-                buffer = BytesIO()
-                joblib.dump(model, buffer)
-                buffer.seek(0)
-                return base64.b64encode(buffer.read()).decode('utf-8')
-            
-            rf_data = serialize_model(self.rf_model)
-            xgb_data = serialize_model(self.xgb_model)
-            scaler_data = serialize_model(self.scaler)
-            
-            for model_name, model_data in [
-                ('rf_model', rf_data),
-                ('xgb_model', xgb_data),
-                ('scaler', scaler_data)
-            ]:
-                existing = session.query(MLModel).filter(MLModel.model_name == model_name).first()
-                if existing:
-                    existing.model_data = model_data
-                    existing.updated_at = datetime.utcnow()
-                    existing.version += 1
-                else:
-                    new_model = MLModel(
-                        model_name=model_name,
-                        model_data=model_data
-                    )
-                    session.add(new_model)
-            
-            session.commit()
-            session.close()
-            print("✅ Models saved to database successfully")
-        except Exception as e:
-            print(f"❌ Error saving models to database: {e}")
-            if 'session' in locals():
-                session.rollback()
-                session.close()
-    
-    def _load_models(self):
-        try:
-            session = get_session()
-            
-            def deserialize_model(model_data):
-                decoded = base64.b64decode(model_data.encode('utf-8'))
-                buffer = BytesIO(decoded)
-                return joblib.load(buffer)
-            
-            rf_record = session.query(MLModel).filter(MLModel.model_name == 'rf_model').first()
-            xgb_record = session.query(MLModel).filter(MLModel.model_name == 'xgb_model').first()
-            scaler_record = session.query(MLModel).filter(MLModel.model_name == 'scaler').first()
-            
-            session.close()
-            
-            if rf_record and xgb_record and scaler_record:
-                self.rf_model = deserialize_model(rf_record.model_data)
-                self.xgb_model = deserialize_model(xgb_record.model_data)
-                self.scaler = deserialize_model(scaler_record.model_data)
-                print(f"✅ Models loaded from database (version: {rf_record.version})")
-                return True
-            else:
-                print("⚠️  No models found in database")
-                return False
-        except Exception as e:
-            print(f"❌ Error loading models from database: {e}")
-            if 'session' in locals():
-                session.close()
-            return False
     
     def _rule_based_prediction(self, indicators):
         """
@@ -776,7 +1066,7 @@ class MLTradingEngine:
                 return False
             
             print(f"\n📚 Learning from trade #{trade_id}:")
-            print(f"   Direction: {trade.direction}, Outcome: {trade.outcome}")
+            print(f"   Direction: {trade.trade_type}, Outcome: {trade.outcome}")
             print(f"   P&L: ${trade.profit_loss:.2f}")
             
             # STEP 1: Incremental weight update (runs every trade)
@@ -1173,13 +1463,13 @@ class MLTradingEngine:
             ind = trade.indicators_at_entry
             
             if ind.get('RSI'):
-                if ind['RSI'] < 30 and trade.direction == 'LONG':
+                if ind['RSI'] < 30 and trade.trade_type == 'LONG':
                     rsi_oversold_wins += 1
-                elif ind['RSI'] > 70 and trade.direction == 'SHORT':
+                elif ind['RSI'] > 70 and trade.trade_type == 'SHORT':
                     rsi_overbought_wins += 1
             
             if ind.get('MACD') and ind.get('MACD_signal'):
-                if ind['MACD'] > ind['MACD_signal'] and trade.direction == 'LONG':
+                if ind['MACD'] > ind['MACD_signal'] and trade.trade_type == 'LONG':
                     macd_bullish_wins += 1
             
             if ind.get('ADX') and ind['ADX'] > 25:
@@ -1271,6 +1561,78 @@ class MLTradingEngine:
                 print(f"📂 Loaded learned indicator weights from previous sessions")
         except Exception as e:
             pass
+    
+    def _load_m2_model(self):
+        """
+        Load M2 meta-labeling model from database.
+        This ensures M2 survives across app restarts.
+        """
+        try:
+            session = get_session()
+            model_record = session.query(MLModel).filter(
+                MLModel.model_name == 'M2_MetaLabeling'
+            ).first()
+            session.close()
+            
+            if model_record:
+                # Deserialize model from base64
+                model_bytes = base64.b64decode(model_record.model_data)
+                buffer = BytesIO(model_bytes)
+                self.m2_model = joblib.load(buffer)
+                print(f"📂 Loaded M2 meta-labeling model from database (version {model_record.version})")
+            else:
+                print(f"ℹ️  No saved M2 model found - will train when 10+ trades available")
+        except Exception as e:
+            print(f"⚠️  Could not load M2 model: {e}")
+            self.m2_model = None
+    
+    def _save_m2_model(self):
+        """
+        Save M2 meta-labeling model to database.
+        This allows M2 to persist across app restarts.
+        """
+        if self.m2_model is None:
+            return
+        
+        try:
+            session = get_session()
+            
+            # Serialize model to bytes
+            buffer = BytesIO()
+            joblib.dump(self.m2_model, buffer)
+            buffer.seek(0)
+            model_bytes = buffer.read()
+            model_b64 = base64.b64encode(model_bytes).decode('utf-8')
+            
+            # Check if model already exists
+            existing = session.query(MLModel).filter(
+                MLModel.model_name == 'M2_MetaLabeling'
+            ).first()
+            
+            if existing:
+                # Update existing model
+                existing.model_data = model_b64
+                existing.updated_at = datetime.utcnow()
+                existing.version += 1
+                print(f"💾 Updated M2 model in database (version {existing.version})")
+            else:
+                # Create new model record
+                new_model = MLModel(
+                    model_name='M2_MetaLabeling',
+                    model_data=model_b64,
+                    version=1
+                )
+                session.add(new_model)
+                print(f"💾 Saved M2 model to database (version 1)")
+            
+            session.commit()
+            session.close()
+            
+        except Exception as e:
+            print(f"⚠️  Could not save M2 model: {e}")
+            if session:
+                session.rollback()
+                session.close()
     
     def _get_last_training_count(self):
         """
