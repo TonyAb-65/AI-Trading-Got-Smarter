@@ -27,6 +27,7 @@ class Trade(Base):
     indicators_at_entry = Column(JSON)
     indicators_at_exit = Column(JSON)
     model_confidence = Column(Float)
+    m2_entry_quality = Column(Float)
     notes = Column(Text)
     
     __table_args__ = (
@@ -51,6 +52,7 @@ class ActivePosition(Base):
     last_check_time = Column(DateTime, index=True)
     current_recommendation = Column(String(10))
     indicators_snapshot = Column(JSON)
+    m2_entry_quality = Column(Float)
     is_active = Column(Boolean, default=True, index=True)
     last_obv_slope = Column(Float)
     monitoring_alerts = Column(JSON)
@@ -219,7 +221,25 @@ def ensure_active_position_timeframe_column(engine):
                 ))
             print("✅ monitoring_alerts column added successfully!")
         
-        if all(col in columns for col in ['timeframe', 'last_obv_slope', 'monitoring_alerts']):
+        if 'm2_entry_quality' not in columns:
+            print("⚙️ Auto-migration: Adding m2_entry_quality column to active_positions...")
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE active_positions ADD COLUMN m2_entry_quality FLOAT"
+                ))
+            print("✅ m2_entry_quality column added successfully!")
+        
+        # Check trades table for m2_entry_quality
+        trades_columns = [col['name'] for col in inspector.get_columns('trades')]
+        if 'm2_entry_quality' not in trades_columns:
+            print("⚙️ Auto-migration: Adding m2_entry_quality column to trades...")
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE trades ADD COLUMN m2_entry_quality FLOAT"
+                ))
+            print("✅ m2_entry_quality column added to trades successfully!")
+        
+        if all(col in columns for col in ['timeframe', 'last_obv_slope', 'monitoring_alerts', 'm2_entry_quality']):
             print("✅ All columns exist - database is up to date")
     except Exception as e:
         print(f"Warning: Could not auto-migrate columns: {e}")
