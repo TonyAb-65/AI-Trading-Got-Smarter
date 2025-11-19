@@ -2,13 +2,13 @@ import threading
 import time
 from datetime import datetime, timedelta
 from position_monitor import PositionMonitor
-from ml_engine import MLTradingEngine
 from divergence_analytics import update_all_divergence_stats
 
 class BackgroundScheduler:
-    def __init__(self):
-        self.ml_engine = MLTradingEngine()
-        self.monitor = PositionMonitor(ml_engine=self.ml_engine)
+    def __init__(self, ml_engine=None):
+        # Use shared ML Engine instance from app.py for consistency
+        self.ml_engine = ml_engine
+        self.monitor = PositionMonitor(ml_engine=self.ml_engine) if self.ml_engine else PositionMonitor()
         self.is_running = False
         self.thread = None
         self.last_analytics_run = None
@@ -72,8 +72,8 @@ class BackgroundScheduler:
 
 _scheduler_instance = None
 
-def get_scheduler():
+def get_scheduler(ml_engine=None):
     global _scheduler_instance
     if _scheduler_instance is None:
-        _scheduler_instance = BackgroundScheduler()
+        _scheduler_instance = BackgroundScheduler(ml_engine=ml_engine)
     return _scheduler_instance
