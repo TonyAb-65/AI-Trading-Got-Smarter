@@ -78,26 +78,31 @@ class PositionMonitor:
             indicators = tech_indicators.get_latest_indicators()
             signals = tech_indicators.get_trend_signals()
             
+            # Calculate support/resistance and trend context FIRST
+            support_levels, resistance_levels = calculate_support_resistance(df)
+            trend_context = tech_indicators.get_trend_context(position.symbol, position.market_type)
+            
+            # Enrich indicators with S/R and trend context (same as market analysis)
+            indicators['support_levels'] = support_levels
+            indicators['resistance_levels'] = resistance_levels
+            indicators['trend_context'] = trend_context
+            
             monitoring_alerts = self._check_tight_monitoring(
                 position, current_price, indicators, signals
             )
             
             # Add profile comparison alerts (early warning system)
+            # NOW uses enriched indicators with S/R and trend_context
             profile_alerts = self._check_profile_deviation(
                 position, indicators
             )
             monitoring_alerts.extend(profile_alerts)
-            
-            # Get historical trend context for duration-aware monitoring
-            trend_context = tech_indicators.get_trend_context(position.symbol, position.market_type)
             
             # Check and resolve active divergences (timing intelligence)
             try:
                 resolve_active_divergences(position.symbol, current_price, trend_context)
             except Exception as e:
                 print(f"Divergence resolution check failed: {e}")
-            
-            support_levels, resistance_levels = calculate_support_resistance(df)
             
             whale_tracker = WhaleTracker(tech_indicators.df)
             whale_movements = whale_tracker.detect_whale_movements()
