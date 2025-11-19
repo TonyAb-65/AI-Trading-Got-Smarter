@@ -647,7 +647,8 @@ if menu == "Market Analysis":
                     stop_loss=manual_sl if manual_sl > 0 else None,
                     take_profit=manual_tp if manual_tp > 0 else None,
                     timeframe=timeframe,
-                    indicators=indicators
+                    indicators=indicators,
+                    m2_entry_quality=prediction.get('m2_entry_quality')
                 )
                 
                 if result['success']:
@@ -825,7 +826,8 @@ elif menu == "Trading Signals":
                     quantity=trade_quantity_signal if trade_quantity_signal > 0 else None,
                     stop_loss=manual_sl_signal if manual_sl_signal > 0 else None,
                     take_profit=manual_tp_signal if manual_tp_signal > 0 else None,
-                    indicators=signal_indicators
+                    indicators=signal_indicators,
+                    m2_entry_quality=prediction.get('m2_entry_quality')
                 )
                 
                 if result['success']:
@@ -991,10 +993,10 @@ elif menu == "Position Tracker":
             trade_type = st.selectbox("Trade Type", ["LONG", "SHORT"])
         
         with col2:
-            entry_price = st.number_input("Entry Price", min_value=0.0, step=0.01)
-            quantity = st.number_input("Quantity", min_value=0.0, step=0.01)
-            stop_loss = st.number_input("Stop Loss (optional)", min_value=0.0, step=0.01)
-            take_profit = st.number_input("Take Profit (optional)", min_value=0.0, step=0.01)
+            entry_price = st.number_input("Entry Price", min_value=0.01, value=1000.0, step=0.01, help="Enter your entry price")
+            quantity = st.number_input("Quantity (optional)", min_value=0.0, value=0.0, step=0.01)
+            stop_loss = st.number_input("Stop Loss (optional)", min_value=0.0, value=0.0, step=0.01)
+            take_profit = st.number_input("Take Profit (optional)", min_value=0.0, value=0.0, step=0.01)
         
         if st.button("Add Position"):
             if not symbol or symbol.strip() == "":
@@ -1004,12 +1006,26 @@ elif menu == "Position Tracker":
             # Map 'custom' to 'forex' for API compatibility
             api_market_type = "forex" if market_type == "custom" else market_type
             
+            # Capture indicators at entry for ML learning
+            try:
+                df = get_market_data_unified(symbol, api_market_type, '1H', 100)
+                if df is not None and len(df) >= 20:
+                    tech = TechnicalIndicators(df)
+                    tech.calculate_all_indicators()
+                    indicators_snapshot = tech.get_latest_indicators()
+                else:
+                    indicators_snapshot = None
+            except:
+                indicators_snapshot = None
+            
             monitor = PositionMonitor()
             result = monitor.add_position(
                 symbol, api_market_type, trade_type, entry_price,
                 quantity if quantity > 0 else None,
                 stop_loss if stop_loss > 0 else None,
-                take_profit if take_profit > 0 else None
+                take_profit if take_profit > 0 else None,
+                timeframe='1H',
+                indicators=indicators_snapshot
             )
             
             if result['success']:
@@ -1057,33 +1073,34 @@ elif menu == "Position Tracker":
                     min_value=0.0, 
                     value=default_exit,
                     step=0.01, 
-                    key="exit_price",
+                    key=f"exit_price_{selected_pos.id}",
                     label_visibility="collapsed"
                 )
-                outcome = st.selectbox("Outcome", ["win", "loss"])
+                outcome = st.selectbox("Outcome", ["win", "loss"], key=f"outcome_{selected_pos.id}")
             
             with col2:
                 exit_type = st.selectbox(
                     "Exit Type", 
                     ["Manual Exit", "TO Achieved (Stop Loss)", "TO Achieved (Take Profit)"],
-                    help="Select how you exited: manually or if stop loss/take profit was hit"
+                    help="Select how you exited: manually or if stop loss/take profit was hit",
+                    key=f"exit_type_{selected_pos.id}"
                 )
                 
             notes = st.text_area(
                 "Exit Notes (Optional)", 
                 placeholder="Why did you exit? What did you learn from this trade?",
-                help="Record your reasoning and observations for future learning"
+                help="Record your reasoning and observations for future learning",
+                key=f"notes_{selected_pos.id}"
             )
             
-            if st.button("Close Position", type="primary"):
+            if st.button("Close Position", type="primary", key=f"close_btn_{selected_pos.id}"):
                 monitor = PositionMonitor()
                 result = monitor.close_position(
-                    selected_pos.symbol, 
+                    selected_pos.id, 
                     exit_price, 
                     outcome,
                     exit_type=exit_type,
-                    notes=notes if notes else None,
-                    entry_price=selected_pos.entry_price
+                    notes=notes if notes else None
                 )
                 
                 if result['success']:
@@ -1414,6 +1431,39 @@ elif menu == "Performance Analytics":
             filtered_trades = [t for t in filtered_trades if t.trade_type == filter_type]
         if filter_outcome != "All":
             filtered_trades = [t for t in filtered_trades if t.outcome == filter_outcome.lower()]
+        
+        # Export to CSV button
+        if len(trades) > 0:
+            import io
+            import json
+            
+            csv_buffer = io.StringIO()
+            csv_buffer.write("ID,Symbol,Trade Type,Entry Price,Exit Price,Entry Time,Exit Time,Outcome,P&L,Duration (hours),Indicators At Entry\n")
+            
+            for t in trades:
+                entry_time = t.entry_time.strftime("%Y-%m-%d %H:%M:%S") if t.entry_time else "N/A"
+                exit_time = t.exit_time.strftime("%Y-%m-%d %H:%M:%S") if t.exit_time else "N/A"
+                
+                duration_hours = 0
+                if t.entry_time and t.exit_time:
+                    duration_hours = (t.exit_time - t.entry_time).total_seconds() / 3600
+                
+                indicators_json = json.dumps(t.indicators_at_entry) if t.indicators_at_entry else "{}"
+                
+                csv_buffer.write(f"{t.id},{t.symbol},{t.trade_type},{t.entry_price},{t.exit_price},"
+                               f"{entry_time},{exit_time},{t.outcome.upper() if t.outcome else 'N/A'},"
+                               f"{t.profit_loss if t.profit_loss else 0},{duration_hours:.2f},"
+                               f'"{indicators_json}"\n')
+            
+            csv_data = csv_buffer.getvalue()
+            
+            st.download_button(
+                label="📥 Download All Trades (CSV)",
+                data=csv_data,
+                file_name=f"trading_history_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                type="primary"
+            )
         
         st.caption(f"Showing {len(filtered_trades)} of {len(trades)} trades")
         
