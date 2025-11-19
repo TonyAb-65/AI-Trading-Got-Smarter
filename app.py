@@ -28,6 +28,11 @@ def initialize_database():
     init_db()
 
 @st.cache_resource
+def get_ml_engine():
+    """Get shared ML Engine instance for profile similarity calculations"""
+    return MLTradingEngine()
+
+@st.cache_resource
 def start_background_scheduler():
     scheduler = get_scheduler()
     scheduler.start()
@@ -73,7 +78,8 @@ def format_price(price):
 def check_global_alerts():
     """Check all active positions for HIGH severity alerts"""
     try:
-        monitor = PositionMonitor()
+        ml_engine = get_ml_engine()
+        monitor = PositionMonitor(ml_engine=ml_engine)
         results = monitor.check_active_positions()
         
         high_alerts = []
@@ -637,7 +643,8 @@ if menu == "Market Analysis":
             if manual_entry <= 0:
                 st.error("❌ Please enter a valid entry price")
             else:
-                monitor = PositionMonitor()
+                ml_engine = get_ml_engine()
+                monitor = PositionMonitor(ml_engine=ml_engine)
                 result = monitor.add_position(
                     symbol,
                     market_type,
@@ -817,7 +824,8 @@ elif menu == "Trading Signals":
             if manual_entry_signal <= 0:
                 st.error("❌ Please enter a valid entry price")
             else:
-                monitor = PositionMonitor()
+                ml_engine = get_ml_engine()
+                monitor = PositionMonitor(ml_engine=ml_engine)
                 result = monitor.add_position(
                     symbol,
                     market_type,
@@ -856,14 +864,16 @@ elif menu == "Position Tracker":
             st.session_state['auto_checked_positions'] = False
         
         if not st.session_state['auto_checked_positions']:
-            monitor = PositionMonitor()
+            ml_engine = get_ml_engine()
+            monitor = PositionMonitor(ml_engine=ml_engine)
             with st.spinner("Auto-checking positions..."):
                 monitor.check_active_positions()
                 st.session_state['auto_checked_positions'] = True
         
         if st.button("🔄 Check All Positions"):
             st.session_state['auto_checked_positions'] = False  # Reset to allow fresh check
-            monitor = PositionMonitor()
+            ml_engine = get_ml_engine()
+            monitor = PositionMonitor(ml_engine=ml_engine)
             with st.spinner("Checking positions..."):
                 results = monitor.check_active_positions()
                 
@@ -963,7 +973,8 @@ elif menu == "Position Tracker":
                         st.write("")
                         if st.button("Update Entry", key=f"update_btn_{pos.id}"):
                             if new_entry != pos.entry_price:
-                                monitor = PositionMonitor()
+                                ml_engine = get_ml_engine()
+                                monitor = PositionMonitor(ml_engine=ml_engine)
                                 result = monitor.update_entry_price(pos.symbol, new_entry, old_entry_price=pos.entry_price)
                                 
                                 if result['success']:
@@ -1018,7 +1029,8 @@ elif menu == "Position Tracker":
             except:
                 indicators_snapshot = None
             
-            monitor = PositionMonitor()
+            ml_engine = get_ml_engine()
+            monitor = PositionMonitor(ml_engine=ml_engine)
             result = monitor.add_position(
                 symbol, api_market_type, trade_type, entry_price,
                 quantity if quantity > 0 else None,
@@ -1094,7 +1106,8 @@ elif menu == "Position Tracker":
             )
             
             if st.button("Close Position", type="primary", key=f"close_btn_{selected_pos.id}"):
-                monitor = PositionMonitor()
+                ml_engine = get_ml_engine()
+                monitor = PositionMonitor(ml_engine=ml_engine)
                 result = monitor.close_position(
                     selected_pos.id, 
                     exit_price, 
