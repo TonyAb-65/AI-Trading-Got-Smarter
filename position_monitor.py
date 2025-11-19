@@ -344,12 +344,23 @@ class PositionMonitor:
                 }
         
         hold_reasons = []
-        if position.trade_type == 'LONG' and bullish_count > bearish_count:
-            hold_reasons.append("Trend still bullish")
-        elif position.trade_type == 'SHORT' and bearish_count > bullish_count:
-            hold_reasons.append("Trend still bearish")
-        else:
-            hold_reasons.append("No clear exit signal")
+        
+        # Provide detailed signal breakdown for HOLD positions
+        if position.trade_type == 'LONG':
+            if bullish_count > bearish_count:
+                hold_reasons.append(f"Trend still bullish ({bullish_count} bullish vs {bearish_count} bearish)")
+            elif bullish_count == bearish_count:
+                hold_reasons.append(f"Mixed signals ({bullish_count} bullish, {bearish_count} bearish) - holding position")
+            else:
+                hold_reasons.append(f"Weakening trend ({bearish_count} bearish vs {bullish_count} bullish) - consider exit soon")
+        
+        elif position.trade_type == 'SHORT':
+            if bearish_count > bullish_count:
+                hold_reasons.append(f"Trend still bearish ({bearish_count} bearish vs {bullish_count} bullish)")
+            elif bearish_count == bullish_count:
+                hold_reasons.append(f"Mixed signals ({bearish_count} bearish, {bullish_count} bullish) - holding position")
+            else:
+                hold_reasons.append(f"Weakening trend ({bullish_count} bullish vs {bearish_count} bearish) - consider exit soon")
         
         return {
             'action': 'HOLD',
@@ -357,7 +368,7 @@ class PositionMonitor:
         }
     
     def add_position(self, symbol, market_type, trade_type, entry_price, 
-                     quantity=None, stop_loss=None, take_profit=None, timeframe='1H', indicators=None):
+                     quantity=None, stop_loss=None, take_profit=None, timeframe='1H', indicators=None, m2_entry_quality=None):
         session = get_session()
         
         try:
@@ -373,7 +384,8 @@ class PositionMonitor:
                 entry_time=datetime.utcnow(),
                 current_price=entry_price,
                 is_active=True,
-                indicators_snapshot=indicators
+                indicators_snapshot=indicators,
+                m2_entry_quality=m2_entry_quality
             )
             
             session.add(position)
@@ -394,25 +406,26 @@ class PositionMonitor:
         finally:
             session.close()
     
-    def close_position(self, symbol, exit_price, outcome, exit_type=None, notes=None, entry_price=None):
+    def close_position(self, position_id, exit_price, outcome, exit_type=None, notes=None):
         session = get_session()
         
         try:
-            query = session.query(ActivePosition).filter(
-                ActivePosition.symbol == symbol,
+            print(f"\n🔒 CLOSING POSITION - ID: {position_id}")
+            
+            position = session.query(ActivePosition).filter(
+                ActivePosition.id == position_id,
                 ActivePosition.is_active == True
-            )
-            
-            if entry_price is not None:
-                query = query.filter(ActivePosition.entry_price == entry_price)
-            
-            position = query.first()
+            ).first()
             
             if not position:
+                print(f"❌ No active position found with ID {position_id}")
                 return {
                     'success': False,
-                    'message': f'No active position found for {symbol}'
+                    'message': f'No active position found with ID {position_id}'
                 }
+            
+            print(f"✅ Found position: {position.symbol} ({position.trade_type} @ ${position.entry_price})")
+            print(f"   Position ID: {position.id}, Is Active: {position.is_active}")
             
             position.is_active = False
             
@@ -429,7 +442,8 @@ class PositionMonitor:
                 outcome=outcome,
                 exit_type=exit_type,
                 notes=notes,
-                indicators_at_entry=position.indicators_snapshot
+                indicators_at_entry=position.indicators_snapshot,
+                m2_entry_quality=position.m2_entry_quality
             )
             
             # Calculate P&L percentage (works even without quantity)
@@ -462,13 +476,19 @@ class PositionMonitor:
             session.add(trade)
             session.commit()
             
+            print(f"✅ Position {position.id} closed successfully: {position.symbol}")
+            print(f"   Trade created with ID: {trade.id}")
+            print(f"   Learning from trade...")
+            
             from ml_engine import MLTradingEngine
             ml_engine = MLTradingEngine()
             ml_engine.learn_from_trade(trade.id)
             
+            print(f"✅ ML learning complete for trade {trade.id}\n")
+            
             return {
                 'success': True,
-                'message': f'Position closed for {symbol}',
+                'message': f'Position closed for {position.symbol}',
                 'trade_id': trade.id
             }
             
