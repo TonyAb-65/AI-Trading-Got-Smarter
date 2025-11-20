@@ -1605,6 +1605,75 @@ class MLTradingEngine:
         except Exception as e:
             pass
     
+    def get_m2_advisory_reason(self, indicators, direction):
+        """
+        Generate specific, actionable M2 advisory message based on market conditions.
+        
+        Args:
+            indicators: Current market indicators
+            direction: 'LONG' or 'SHORT'
+        
+        Returns:
+            Specific advisory message explaining why entry timing may be suboptimal
+        """
+        reasons = []
+        
+        # Check divergence timing
+        has_div = indicators.get('has_divergence', 0) == 1
+        candles_elapsed = indicators.get('candles_elapsed', 0)
+        
+        if not has_div:
+            reasons.append("No divergence detected")
+        elif candles_elapsed > 10:
+            reasons.append(f"Divergence {int(candles_elapsed)} candles old - may be too late")
+        
+        # Check trend strength
+        adx = indicators.get('ADX', 0)
+        plus_di = indicators.get('+DI', 0)
+        minus_di = indicators.get('-DI', 0)
+        
+        if direction == 'LONG':
+            if minus_di > plus_di and adx > 25:
+                reasons.append("Trend still falling - No clear reversal signal")
+            elif adx < 20:
+                reasons.append("Weak trend (ADX < 20) - wait for confirmation")
+        else:  # SHORT
+            if plus_di > minus_di and adx > 25:
+                reasons.append("Trend still rising - No clear reversal signal")
+            elif adx < 20:
+                reasons.append("Weak trend (ADX < 20) - wait for confirmation")
+        
+        # Check momentum indicators
+        rsi = indicators.get('RSI', 50)
+        macd = indicators.get('MACD', 0)
+        macd_signal = indicators.get('MACD_Signal', 0)
+        
+        if direction == 'LONG':
+            if rsi > 70:
+                reasons.append("RSI overbought - risk of pullback")
+            elif macd < macd_signal:
+                reasons.append("MACD still bearish - wait for crossover")
+        else:  # SHORT
+            if rsi < 30:
+                reasons.append("RSI oversold - risk of bounce")
+            elif macd > macd_signal:
+                reasons.append("MACD still bullish - wait for crossover")
+        
+        # Check volume confirmation
+        mfi = indicators.get('MFI', 50)
+        obv_slope = indicators.get('last_obv_slope', 0)
+        
+        if direction == 'LONG' and obv_slope < 0:
+            reasons.append("Volume declining - weak buying pressure")
+        elif direction == 'SHORT' and obv_slope > 0:
+            reasons.append("Volume increasing - weak selling pressure")
+        
+        # Build final message
+        if reasons:
+            return " - ".join(reasons)
+        else:
+            return "Entry timing may be suboptimal - consider waiting for stronger confirmation"
+    
     def _load_m2_model(self):
         """
         Load M2 meta-labeling model from database.
