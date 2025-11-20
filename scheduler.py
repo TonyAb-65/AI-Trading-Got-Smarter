@@ -18,7 +18,7 @@ class BackgroundScheduler:
             self.is_running = True
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
-            print("Background scheduler started - Position monitoring every 30 minutes")
+            print("Background scheduler started - Position monitoring every 5 minutes")
     
     def stop(self):
         self.is_running = False
@@ -31,10 +31,10 @@ class BackgroundScheduler:
             try:
                 self._check_positions()
                 self._run_analytics_if_needed()
-                time.sleep(1800)
+                time.sleep(300)
             except Exception as e:
                 print(f"Scheduler error: {e}")
-                time.sleep(1800)
+                time.sleep(300)
     
     def _check_positions(self):
         try:
