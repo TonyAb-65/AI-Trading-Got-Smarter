@@ -725,13 +725,7 @@ if menu == "Market Analysis":
                     st.success(f"✅ {result['message']}")
                     st.success(f"🎯 Position added: {symbol} {manual_direction} @ {format_price(manual_entry)}")
                     st.info("📍 Go to 'Position Tracker' to view and manage this position")
-                    del st.session_state['last_prediction']
-                    del st.session_state['last_symbol']
-                    del st.session_state['last_market_type']
-                    del st.session_state['last_timeframe']
-                    if 'last_indicators' in st.session_state:
-                        del st.session_state['last_indicators']
-                    st.rerun()
+                    # Keep analysis data persistent - don't delete session state
                 else:
                     st.error(f"❌ {result['message']}")
 
@@ -905,14 +899,9 @@ elif menu == "Trading Signals":
                     st.success(f"✅ {result['message']}")
                     st.success(f"🎯 Position added: {symbol} {manual_direction_signal} @ {format_price(manual_entry_signal)}")
                     st.info("📍 Go to 'Position Tracker' to view and manage this position")
-                    del st.session_state['last_signal_prediction']
-                    del st.session_state['last_signal_symbol']
-                    del st.session_state['last_signal_market_type']
-                    if 'last_signal_indicators' in st.session_state:
-                        del st.session_state['last_signal_indicators']
-                    st.rerun()
+                    # Keep signal data persistent - don't delete session state
                 else:
-                        st.error(f"❌ {result['message']}")
+                    st.error(f"❌ {result['message']}")
 
 elif menu == "Position Tracker":
     st.header("📍 Active Position Monitor")
