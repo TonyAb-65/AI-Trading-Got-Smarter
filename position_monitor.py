@@ -75,12 +75,12 @@ class PositionMonitor:
                 }
             
             tech_indicators = TechnicalIndicators(df)
-            tech_indicators.calculate_all_indicators()
+            indicators_df = tech_indicators.calculate_all_indicators()
             indicators = tech_indicators.get_latest_indicators()
             signals = tech_indicators.get_trend_signals()
             
-            # Calculate support/resistance and trend context FIRST
-            support_levels, resistance_levels = calculate_support_resistance(df)
+            # Calculate support/resistance and trend context FIRST (use enriched indicators_df, same as Market Analysis)
+            support_levels, resistance_levels = calculate_support_resistance(indicators_df)
             trend_context = tech_indicators.get_trend_context(position.symbol, position.market_type)
             
             # Enrich indicators with S/R and trend context (same as market analysis)
