@@ -346,34 +346,47 @@ if menu == "Market Analysis":
     
     col1, col2, col3 = st.columns(3)
     
+    # Initialize from stored values (for persistence across tab switches)
+    default_market_type = st.session_state.get('last_market_type', 'crypto')
+    default_symbol = st.session_state.get('last_symbol', 'BTC/USD')
+    default_timeframe = st.session_state.get('last_timeframe', '1H')
+    
     with col1:
-        market_type = st.selectbox("Market Type", ["crypto", "forex", "metals", "custom"])
+        market_type = st.selectbox(
+            "Market Type", 
+            ["crypto", "forex", "metals", "custom"],
+            index=["crypto", "forex", "metals", "custom"].index(default_market_type) if default_market_type in ["crypto", "forex", "metals", "custom"] else 0,
+            key="market_analysis_market_type"
+        )
     
     with col2:
         if market_type == "crypto":
-            symbol = st.selectbox("Select Pair", CRYPTO_PAIRS)
+            symbol_index = CRYPTO_PAIRS.index(default_symbol) if default_symbol in CRYPTO_PAIRS else 0
+            symbol = st.selectbox("Select Pair", CRYPTO_PAIRS, index=symbol_index, key="market_analysis_symbol")
         elif market_type == "forex":
-            symbol = st.selectbox("Select Pair", FOREX_PAIRS)
+            symbol_index = FOREX_PAIRS.index(default_symbol) if default_symbol in FOREX_PAIRS else 0
+            symbol = st.selectbox("Select Pair", FOREX_PAIRS, index=symbol_index, key="market_analysis_symbol")
         elif market_type == "metals":
-            symbol = st.selectbox("Select Metal", METALS)
+            symbol_index = METALS.index(default_symbol) if default_symbol in METALS else 0
+            symbol = st.selectbox("Select Metal", METALS, index=symbol_index, key="market_analysis_symbol")
         else:  # custom
-            symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", placeholder="BTC/USD").upper()
+            symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", value=default_symbol, placeholder="BTC/USD", key="market_analysis_symbol").upper()
     
     with col3:
-        timeframe = st.selectbox("Timeframe", ["5m", "15m", "30m", "1H", "4H", "1D"])
-    
-    # Check if pair/timeframe changed - clear analysis if so
-    current_params = f"{symbol}_{market_type}_{timeframe}"
-    if 'analysis_params' in st.session_state and st.session_state['analysis_params'] != current_params:
-        # Clear old analysis when parameters change
-        for key in ['analysis_data', 'analysis_params', 'last_prediction', 'last_symbol', 'last_market_type', 'last_timeframe', 'last_indicators']:
-            if key in st.session_state:
-                del st.session_state[key]
+        timeframe_index = ["5m", "15m", "30m", "1H", "4H", "1D"].index(default_timeframe) if default_timeframe in ["5m", "15m", "30m", "1H", "4H", "1D"] else 3
+        timeframe = st.selectbox("Timeframe", ["5m", "15m", "30m", "1H", "4H", "1D"], index=timeframe_index, key="market_analysis_timeframe")
     
     if st.button("Analyze Market", type="primary"):
         if not symbol or symbol.strip() == "":
             st.error("❌ Please enter a trading pair symbol")
             st.stop()
+        
+        # Clear old analysis if parameters changed (only when explicitly analyzing)
+        current_params = f"{symbol}_{market_type}_{timeframe}"
+        if 'analysis_params' in st.session_state and st.session_state['analysis_params'] != current_params:
+            for key in ['analysis_data', 'analysis_params', 'last_prediction', 'last_symbol', 'last_market_type', 'last_timeframe', 'last_indicators']:
+                if key in st.session_state:
+                    del st.session_state[key]
         
         # Map 'custom' to 'forex' for API compatibility (Twelve Data treats most symbols as forex pairs)
         api_market_type = "forex" if market_type == "custom" else market_type
