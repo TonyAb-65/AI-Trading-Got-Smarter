@@ -362,6 +362,14 @@ if menu == "Market Analysis":
     with col3:
         timeframe = st.selectbox("Timeframe", ["5m", "15m", "30m", "1H", "4H", "1D"])
     
+    # Check if pair/timeframe changed - clear analysis if so
+    current_params = f"{symbol}_{market_type}_{timeframe}"
+    if 'analysis_params' in st.session_state and st.session_state['analysis_params'] != current_params:
+        # Clear old analysis when parameters change
+        for key in ['analysis_data', 'analysis_params', 'last_prediction', 'last_symbol', 'last_market_type', 'last_timeframe', 'last_indicators']:
+            if key in st.session_state:
+                del st.session_state[key]
+    
     if st.button("Analyze Market", type="primary"):
         if not symbol or symbol.strip() == "":
             st.error("❌ Please enter a trading pair symbol")
@@ -402,192 +410,234 @@ if menu == "Market Analysis":
                 latest_indicators['support_levels'] = support_levels
                 latest_indicators['resistance_levels'] = resistance_levels
                 
-                st.success(f"✅ Analysis complete for {symbol}")
+                # Get ML prediction
+                ml_engine = MLTradingEngine()
+                prediction = ml_engine.predict(latest_indicators)
                 
-                col1, col2, col3, col4, col5 = st.columns(5)
-                current_price = latest_indicators.get('current_price', 0)
+                # Log divergences for timing intelligence
+                try:
+                    if 'trend_context' in latest_indicators:
+                        current_price = latest_indicators.get('close', 0)
+                        log_divergences_from_context(symbol, timeframe, latest_indicators['trend_context'], current_price)
+                except Exception as e:
+                    print(f"Divergence logging failed: {e}")
                 
-                with col1:
-                    st.metric("Current Price", format_price(current_price))
-                with col2:
-                    rsi = latest_indicators.get('RSI')
-                    st.metric("RSI", f"{rsi:.1f}" if rsi else "N/A")
-                with col3:
-                    adx = latest_indicators.get('ADX')
-                    st.metric("ADX", f"{adx:.1f}" if adx else "N/A")
-                with col4:
-                    mfi = latest_indicators.get('MFI')
-                    st.metric("MFI", f"{mfi:.1f}" if mfi else "N/A")
-                with col5:
-                    obv = latest_indicators.get('OBV')
-                    if obv is not None:
-                        obv_formatted = f"{obv:,.0f}" if abs(obv) > 1000 else f"{obv:.2f}"
-                        st.metric("OBV", obv_formatted)
-                    else:
-                        st.metric("OBV", "N/A")
+                # Get candlestick patterns
+                patterns = tech.detect_candlestick_patterns()
                 
-                st.plotly_chart(
-                    plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels),
-                    use_container_width=True
-                )
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.subheader("Technical Signals")
-                    for indicator, signal in signals.items():
-                        color = "🟢" if signal in ['bullish', 'oversold', 'strong_uptrend'] else "🔴" if signal in ['bearish', 'overbought', 'strong_downtrend'] else "🟡"
-                        
-                        # Show raw values for ADX for transparency
-                        if indicator == 'ADX':
-                            adx_val = latest_indicators.get('ADX', 0)
-                            di_plus = latest_indicators.get('DI_plus', 0)
-                            di_minus = latest_indicators.get('DI_minus', 0)
-                            st.write(f"{color} **{indicator}**: {signal}")
-                            st.caption(f"   ADX: {adx_val:.1f} | +DI: {di_plus:.1f} | -DI: {di_minus:.1f}")
-                        else:
-                            st.write(f"{color} **{indicator}**: {signal}")
-                    
-                    st.divider()
-                    st.subheader("🧠 Smart Money (OBV)")
-                    obv_ctx = trend_context.get('OBV', {})
-                    obv_slope = obv_ctx.get('slope', 0.0)
-                    obv_divergence = obv_ctx.get('divergence', 'none')
-                    
-                    if obv_divergence == 'bullish':
-                        st.write("🟢 **Bullish Divergence** - Smart money accumulating")
-                        st.caption(f"   Slope: {obv_slope:+.2f} (Price down, volume up)")
-                        
-                        # Show timing intelligence
-                        timing_info = get_divergence_timing_info('OBV', timeframe, 'bullish')
-                        if timing_info:
-                            st.info(f"⏱️ **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
-                    elif obv_divergence == 'bearish':
-                        st.write("🔴 **Bearish Divergence** - Smart money distributing")
-                        st.caption(f"   Slope: {obv_slope:+.2f} (Price up, volume down)")
-                        
-                        # Show timing intelligence
-                        timing_info = get_divergence_timing_info('OBV', timeframe, 'bearish')
-                        if timing_info:
-                            speed_emoji = "⚠️" if timing_info['speed_class'] == 'fast' else "✅" if timing_info['speed_class'] == 'actionable' else "⏱️"
-                            st.info(f"{speed_emoji} **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
-                    else:
-                        slope_direction = "Rising" if obv_slope > 0.5 else "Falling" if obv_slope < -0.5 else "Flat"
-                        slope_color = "🟢" if obv_slope > 0.5 else "🔴" if obv_slope < -0.5 else "🟡"
-                        st.write(f"{slope_color} **{slope_direction}** - No divergence")
-                        st.caption(f"   Slope: {obv_slope:+.2f}")
-                
-                with col2:
-                    st.subheader("Candlestick Patterns")
-                    patterns = tech.detect_candlestick_patterns()
-                    if patterns:
-                        for pattern_name, signal in patterns.items():
-                            if signal == 'bullish':
-                                st.write(f"🟢 **{pattern_name.replace('_', ' ')}** (Bullish)")
-                            elif signal == 'bearish':
-                                st.write(f"🔴 **{pattern_name.replace('_', ' ')}** (Bearish)")
-                            else:
-                                st.write(f"🟡 **{pattern_name.replace('_', ' ')}** (Neutral)")
-                    else:
-                        st.info("No patterns detected")
-                
-                with col3:
-                    st.subheader("Support & Resistance")
-                    st.write("**Resistance Levels:**")
-                    for r in resistance_levels:
-                        st.write(f"🔴 {format_price(r)}")
-                    st.write("**Support Levels:**")
-                    for s in support_levels:
-                        st.write(f"🟢 {format_price(s)}")
-                
+                # Get whale data for crypto
+                whale_data = None
                 if market_type == "crypto":
-                    st.subheader("🐋 Whale & Smart Money Analysis")
-                    okx_client = OKXClient(api_key=os.getenv('OKX_API_KEY'))
-                    orderbook = okx_client.get_orderbook(symbol)
-                    
-                    whale_tracker = WhaleTracker(indicators_df, orderbook)
-                    whale_movements = whale_tracker.detect_whale_movements()
-                    smart_money = whale_tracker.detect_smart_money()
-                    volume_profile = whale_tracker.get_volume_profile()
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        if whale_movements:
-                            st.write("**Recent Whale Activity:**")
-                            for movement in whale_movements[:5]:
-                                st.write(f"{movement['transaction_type']} - Impact Score: {movement['impact_score']:.1f}")
-                        else:
-                            st.info("No significant whale activity detected")
-                    
-                    with col2:
-                        if smart_money:
-                            st.write("**Smart Money Signals:**")
-                            for signal in smart_money:
-                                st.write(f"• {signal['description']} (Confidence: {signal['confidence']})")
-                        else:
-                            st.info("No smart money signals detected")
-                    
-                    if volume_profile:
-                        st.write(f"**Volume Profile:** Current: {volume_profile['current_volume']:,.0f} | Avg: {volume_profile['average_volume']:,.0f} | {volume_profile['volume_vs_avg']:.0f}% of average")
-                
-                st.divider()
-                st.subheader("🤖 AI Trading Recommendation")
-                
-                with st.spinner("Generating AI recommendation..."):
-                    ml_engine = MLTradingEngine()
-                    prediction = ml_engine.predict(latest_indicators)
-                    
-                    # Log divergences for timing intelligence (no logic change)
                     try:
-                        if 'trend_context' in latest_indicators:
-                            current_price = latest_indicators.get('close', 0)
-                            log_divergences_from_context(symbol, timeframe, latest_indicators['trend_context'], current_price)
+                        okx_client = OKXClient(api_key=os.getenv('OKX_API_KEY'))
+                        orderbook = okx_client.get_orderbook(symbol)
+                        whale_tracker = WhaleTracker(indicators_df, orderbook)
+                        whale_data = {
+                            'movements': whale_tracker.detect_whale_movements(),
+                            'smart_money': whale_tracker.detect_smart_money(),
+                            'volume_profile': whale_tracker.get_volume_profile()
+                        }
                     except Exception as e:
-                        print(f"Divergence logging failed: {e}")
-                    
-                    st.session_state['last_prediction'] = prediction
-                    st.session_state['last_symbol'] = symbol
-                    st.session_state['last_market_type'] = api_market_type  # Store the API-compatible market type
-                    st.session_state['last_timeframe'] = timeframe
-                    st.session_state['last_indicators'] = latest_indicators
-                    
-                    # Pre-fill form fields with predicted values
-                    if prediction.get('entry_price'):
-                        st.session_state['manual_entry_price'] = float(prediction['entry_price'])
-                        st.session_state['manual_sl'] = float(prediction.get('stop_loss', 0.0))
-                        st.session_state['manual_tp'] = float(prediction.get('take_profit', 0.0))
+                        print(f"Whale analysis failed: {e}")
+                
+                # Store ALL analysis data in session state for persistence
+                st.session_state['analysis_data'] = {
+                    'df': df,
+                    'indicators_df': indicators_df,
+                    'latest_indicators': latest_indicators,
+                    'signals': signals,
+                    'support_levels': support_levels,
+                    'resistance_levels': resistance_levels,
+                    'prediction': prediction,
+                    'patterns': patterns,
+                    'whale_data': whale_data,
+                    'trend_context': trend_context
+                }
+                st.session_state['analysis_params'] = current_params
+                st.session_state['last_prediction'] = prediction
+                st.session_state['last_symbol'] = symbol
+                st.session_state['last_market_type'] = api_market_type
+                st.session_state['last_timeframe'] = timeframe
+                st.session_state['last_indicators'] = latest_indicators
+                
+                # Pre-fill form fields with predicted values
+                if prediction.get('entry_price'):
+                    st.session_state['manual_entry_price'] = float(prediction['entry_price'])
+                    st.session_state['manual_sl'] = float(prediction.get('stop_loss', 0.0))
+                    st.session_state['manual_tp'] = float(prediction.get('take_profit', 0.0))
+                else:
+                    # Clear stale values for HOLD predictions
+                    for key in ['manual_entry_price', 'manual_sl', 'manual_tp']:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                
+                st.success(f"✅ Analysis complete for {symbol}")
+    
+    # Display stored analysis (persists across tab switches)
+    if 'analysis_data' in st.session_state:
+        data = st.session_state['analysis_data']
+        symbol = st.session_state.get('last_symbol', '')
+        market_type = st.session_state.get('last_market_type', 'crypto')
+        timeframe = st.session_state.get('last_timeframe', '1H')
+        
+        df = data['df']
+        indicators_df = data['indicators_df']
+        latest_indicators = data['latest_indicators']
+        signals = data['signals']
+        support_levels = data['support_levels']
+        resistance_levels = data['resistance_levels']
+        prediction = data['prediction']
+        patterns = data['patterns']
+        whale_data = data['whale_data']
+        trend_context = data['trend_context']
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        current_price = latest_indicators.get('current_price', 0)
+        
+        with col1:
+            st.metric("Current Price", format_price(current_price))
+        with col2:
+            rsi = latest_indicators.get('RSI')
+            st.metric("RSI", f"{rsi:.1f}" if rsi else "N/A")
+        with col3:
+            adx = latest_indicators.get('ADX')
+            st.metric("ADX", f"{adx:.1f}" if adx else "N/A")
+        with col4:
+            mfi = latest_indicators.get('MFI')
+            st.metric("MFI", f"{mfi:.1f}" if mfi else "N/A")
+        with col5:
+            obv = latest_indicators.get('OBV')
+            if obv is not None:
+                obv_formatted = f"{obv:,.0f}" if abs(obv) > 1000 else f"{obv:.2f}"
+                st.metric("OBV", obv_formatted)
+            else:
+                st.metric("OBV", "N/A")
+        
+        st.plotly_chart(
+            plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels),
+            use_container_width=True
+        )
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.subheader("Technical Signals")
+            for indicator, signal in signals.items():
+                color = "🟢" if signal in ['bullish', 'oversold', 'strong_uptrend'] else "🔴" if signal in ['bearish', 'overbought', 'strong_downtrend'] else "🟡"
+                
+                # Show raw values for ADX for transparency
+                if indicator == 'ADX':
+                    adx_val = latest_indicators.get('ADX', 0)
+                    di_plus = latest_indicators.get('DI_plus', 0)
+                    di_minus = latest_indicators.get('DI_minus', 0)
+                    st.write(f"{color} **{indicator}**: {signal}")
+                    st.caption(f"   ADX: {adx_val:.1f} | +DI: {di_plus:.1f} | -DI: {di_minus:.1f}")
+                else:
+                    st.write(f"{color} **{indicator}**: {signal}")
+            
+            st.divider()
+            st.subheader("🧠 Smart Money (OBV)")
+            obv_ctx = trend_context.get('OBV', {})
+            obv_slope = obv_ctx.get('slope', 0.0)
+            obv_divergence = obv_ctx.get('divergence', 'none')
+            
+            if obv_divergence == 'bullish':
+                st.write("🟢 **Bullish Divergence** - Smart money accumulating")
+                st.caption(f"   Slope: {obv_slope:+.2f} (Price down, volume up)")
+                
+                # Show timing intelligence
+                timing_info = get_divergence_timing_info('OBV', timeframe, 'bullish')
+                if timing_info:
+                    st.info(f"⏱️ **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
+            elif obv_divergence == 'bearish':
+                st.write("🔴 **Bearish Divergence** - Smart money distributing")
+                st.caption(f"   Slope: {obv_slope:+.2f} (Price up, volume down)")
+                
+                # Show timing intelligence
+                timing_info = get_divergence_timing_info('OBV', timeframe, 'bearish')
+                if timing_info:
+                    speed_emoji = "⚠️" if timing_info['speed_class'] == 'fast' else "✅" if timing_info['speed_class'] == 'actionable' else "⏱️"
+                    st.info(f"{speed_emoji} **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
+            else:
+                slope_direction = "Rising" if obv_slope > 0.5 else "Falling" if obv_slope < -0.5 else "Flat"
+                slope_color = "🟢" if obv_slope > 0.5 else "🔴" if obv_slope < -0.5 else "🟡"
+                st.write(f"{slope_color} **{slope_direction}** - No divergence")
+                st.caption(f"   Slope: {obv_slope:+.2f}")
+        
+        with col2:
+            st.subheader("Candlestick Patterns")
+            if patterns:
+                for pattern_name, signal in patterns.items():
+                    if signal == 'bullish':
+                        st.write(f"🟢 **{pattern_name.replace('_', ' ')}** (Bullish)")
+                    elif signal == 'bearish':
+                        st.write(f"🔴 **{pattern_name.replace('_', ' ')}** (Bearish)")
                     else:
-                        # Clear stale values for HOLD predictions
-                        if 'manual_entry_price' in st.session_state:
-                            del st.session_state['manual_entry_price']
-                        if 'manual_sl' in st.session_state:
-                            del st.session_state['manual_sl']
-                        if 'manual_tp' in st.session_state:
-                            del st.session_state['manual_tp']
-                    
-                    if prediction['signal'] == 'LONG':
-                        st.success(f"📈 **LONG** - Confidence: {prediction['confidence']:.1f}%")
-                    elif prediction['signal'] == 'SHORT':
-                        st.error(f"📉 **SHORT** - Confidence: {prediction['confidence']:.1f}%")
-                    else:
-                        st.warning(f"⏸️ **HOLD** - Confidence: {prediction['confidence']:.1f}%")
-                    
-                    if prediction['entry_price'] is not None:
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Entry Price", format_price(prediction['entry_price']))
-                        with col2:
-                            st.metric("Stop Loss", format_price(prediction['stop_loss']))
-                        with col3:
-                            st.metric("Take Profit", format_price(prediction['take_profit']))
-                    else:
-                        st.info(prediction.get('recommendation', 'Insufficient data for prediction. Models not trained yet.'))
-                    
-                    if 'reasons' in prediction and prediction['reasons']:
-                        st.write("**Why this recommendation?**")
-                        for reason in prediction['reasons']:
-                            st.write(f"• {reason}")
+                        st.write(f"🟡 **{pattern_name.replace('_', ' ')}** (Neutral)")
+            else:
+                st.info("No patterns detected")
+        
+        with col3:
+            st.subheader("Support & Resistance")
+            st.write("**Resistance Levels:**")
+            for r in resistance_levels:
+                st.write(f"🔴 {format_price(r)}")
+            st.write("**Support Levels:**")
+            for s in support_levels:
+                st.write(f"🟢 {format_price(s)}")
+        
+        if market_type == "crypto" and whale_data:
+            st.subheader("🐋 Whale & Smart Money Analysis")
+            whale_movements = whale_data['movements']
+            smart_money = whale_data['smart_money']
+            volume_profile = whale_data['volume_profile']
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if whale_movements:
+                    st.write("**Recent Whale Activity:**")
+                    for movement in whale_movements[:5]:
+                        st.write(f"{movement['transaction_type']} - Impact Score: {movement['impact_score']:.1f}")
+                else:
+                    st.info("No significant whale activity detected")
+            
+            with col2:
+                if smart_money:
+                    st.write("**Smart Money Signals:**")
+                    for signal in smart_money:
+                        st.write(f"• {signal['description']} (Confidence: {signal['confidence']})")
+                else:
+                    st.info("No smart money signals detected")
+            
+            if volume_profile:
+                st.write(f"**Volume Profile:** Current: {volume_profile['current_volume']:,.0f} | Avg: {volume_profile['average_volume']:,.0f} | {volume_profile['volume_vs_avg']:.0f}% of average")
+        
+        st.divider()
+        st.subheader("🤖 AI Trading Recommendation")
+        
+        if prediction['signal'] == 'LONG':
+            st.success(f"📈 **LONG** - Confidence: {prediction['confidence']:.1f}%")
+        elif prediction['signal'] == 'SHORT':
+            st.error(f"📉 **SHORT** - Confidence: {prediction['confidence']:.1f}%")
+        else:
+            st.warning(f"⏸️ **HOLD** - Confidence: {prediction['confidence']:.1f}%")
+        
+        if prediction['entry_price'] is not None:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Entry Price", format_price(prediction['entry_price']))
+            with col2:
+                st.metric("Stop Loss", format_price(prediction['stop_loss']))
+            with col3:
+                st.metric("Take Profit", format_price(prediction['take_profit']))
+        else:
+            st.info(prediction.get('recommendation', 'Insufficient data for prediction. Models not trained yet.'))
+        
+        if 'reasons' in prediction and prediction['reasons']:
+            st.write("**Why this recommendation?**")
+            for reason in prediction['reasons']:
+                st.write(f"• {reason}")
                     
     
     if 'last_prediction' in st.session_state and st.session_state['last_prediction']:
@@ -964,7 +1014,7 @@ elif menu == "Position Tracker":
                             last_check_riyadh = convert_to_riyadh_time(pos.last_check_time)
                             st.caption(f"Last checked: {last_check_riyadh.strftime('%Y-%m-%d %H:%M:%S')} (Riyadh)")
                         
-                        st.info("💡 Position is being monitored automatically every 15 minutes")
+                        st.info("💡 Position is being monitored automatically every 5 minutes")
                     
                     st.divider()
                     st.write("**✏️ Adjust Entry Price**")
