@@ -5,6 +5,7 @@ from api_integrations import get_market_data_unified, get_current_price
 from technical_indicators import TechnicalIndicators, calculate_support_resistance
 from whale_tracker import WhaleTracker
 from divergence_resolver import resolve_active_divergences
+from telegram_notifier import send_telegram_alert
 import json
 import numpy as np
 
@@ -136,6 +137,25 @@ class PositionMonitor:
             current_obv_slope = indicators.get('obv_slope', 0)
             position.last_obv_slope = current_obv_slope
             position.monitoring_alerts = monitoring_alerts
+            
+            # Send Telegram alert for HIGH severity alerts only
+            high_severity_alerts = [a for a in monitoring_alerts if a.get('severity') == 'HIGH']
+            if high_severity_alerts:
+                try:
+                    alert = high_severity_alerts[0]
+                    send_telegram_alert(
+                        symbol=position.symbol,
+                        position_type=position.trade_type,
+                        entry_price=entry_price,
+                        current_price=current_price,
+                        pnl_percentage=pnl_percentage,
+                        severity='HIGH',
+                        alert_message=alert.get('message', 'Market alert'),
+                        recommendation=recommendation['action'],
+                        reason=recommendation['reason']
+                    )
+                except Exception as e:
+                    print(f"Telegram notification error: {e}")
             
             return {
                 'symbol': position.symbol,
