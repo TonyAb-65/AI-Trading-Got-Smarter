@@ -28,11 +28,14 @@ class Trade(Base):
     indicators_at_exit = Column(JSON)
     model_confidence = Column(Float)
     m2_entry_quality = Column(Float)
+    volatility_regime = Column(String(20))  # NEW: LOW, MEDIUM, HIGH, EXTREME
+    volatility_score = Column(Float)  # NEW: Composite volatility score 0-100
     notes = Column(Text)
     
     __table_args__ = (
         Index('idx_symbol_outcome', 'symbol', 'outcome'),
         Index('idx_entry_exit_time', 'entry_time', 'exit_time'),
+        Index('idx_volatility_regime', 'volatility_regime'),  # NEW: For regime filtering
     )
 
 class ActivePosition(Base):
