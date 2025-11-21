@@ -549,6 +549,34 @@ if menu == "Market Analysis":
                     st.write(f"{color} **{indicator}**: {signal}")
             
             st.divider()
+            st.subheader("🌡️ Volatility Metrics")
+            
+            # Display ATR and volatility regime info
+            atr_val = latest_indicators.get('ATR', 0)
+            atr_pct = latest_indicators.get('ATR_pct_price', 0)
+            atr_percentile = latest_indicators.get('ATR_percentile', 50)
+            current_price = latest_indicators.get('current_price', 0)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("ATR", f"${atr_val:,.2f}" if current_price > 100 else f"${atr_val:.4f}")
+                st.caption(f"{atr_pct:.2f}% of price")
+            with col2:
+                st.metric("ATR Percentile", f"{atr_percentile:.1f}%")
+                if atr_percentile >= 75:
+                    st.caption("🔴 Extreme volatility")
+                elif atr_percentile >= 55:
+                    st.caption("🟡 High volatility")
+                elif atr_percentile >= 30:
+                    st.caption("🟢 Medium volatility")
+                else:
+                    st.caption("🟢 Low volatility")
+            with col3:
+                bb_width = latest_indicators.get('BB_width_pct', 0)
+                st.metric("BB Width", f"{bb_width:.2f}%")
+                st.caption("Bollinger Band width")
+            
+            st.divider()
             st.subheader("🧠 Smart Money (OBV)")
             obv_ctx = trend_context.get('OBV', {})
             obv_slope = obv_ctx.get('slope', 0.0)
