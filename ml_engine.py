@@ -19,6 +19,10 @@ class MLTradingEngine:
         self.feature_columns = []
         self.m2_model = None  # Meta-labeling model for entry quality
         
+        # Cache profiles to avoid re-fitting scaler on every predict()
+        self.cached_profiles = None
+        self.profiles_trade_count = 0
+        
         self.indicator_weights = {
             'RSI': 2.0,
             'MACD': 2.0,
@@ -33,15 +37,15 @@ class MLTradingEngine:
         self._load_m2_model()  # Load M2 model if exists
     
     def prepare_features(self, indicators, trade_type=None):
+        """
+        Prepare features for ML models - ORIGINAL VERSION (no volatility features)
+        """
         features = []
         feature_names = [
             'RSI', 'MACD', 'MACD_hist', 'Stoch_K', 'Stoch_D',
             'MFI', 'CCI', 'ADX', 'DI_plus', 'DI_minus',
             'current_price', 'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
-            'BB_upper', 'BB_middle', 'BB_lower', 'ATR', 'volume', 'Volume_SMA',
-            # NEW: Volatility features for regime classification
-            'ATR_percentile', 'BB_width_pct', 'variance_14', 'variance_50',
-            'wick_to_body_ratio', 'ATR_pct_price'
+            'BB_upper', 'BB_middle', 'BB_lower', 'ATR', 'volume', 'Volume_SMA'
         ]
         
         # Add trade direction as first feature (1.0 for LONG, -1.0 for SHORT, 0.0 for unknown)
@@ -642,18 +646,29 @@ class MLTradingEngine:
             current_regime, regime_score = self.classify_volatility_regime(indicators)
             print(f"🌡️  Current Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
             
-            # Store regime in indicators for later use
-            indicators['volatility_regime'] = current_regime
-            indicators['volatility_score'] = regime_score
+            # Build profiles from historical trades (ORIGINAL LOGIC - NO CHANGES)
+            from database import get_session, Trade
+            session = get_session()
+            try:
+                current_trade_count = session.query(Trade).filter(
+                    Trade.exit_price.isnot(None),
+                    Trade.outcome.isnot(None),
+                    Trade.indicators_at_entry.isnot(None)
+                ).count()
+            finally:
+                session.close()
             
-            # Build profiles from historical trades
-            profiles = self.build_trade_profiles()
+            if self.cached_profiles is None or current_trade_count != self.profiles_trade_count:
+                self.cached_profiles = self.build_trade_profiles()
+                self.profiles_trade_count = current_trade_count
+            
+            profiles = self.cached_profiles
             
             if profiles is None:
                 print("⚠️  Not enough trades to build profiles - using rule-based prediction only")
                 return rule_based_result
             
-            # Calculate similarity to each profile
+            # Calculate similarity to each profile (ORIGINAL LOGIC)
             sim_win_long = self.calculate_similarity(indicators, profiles.get('win_long'))
             sim_win_short = self.calculate_similarity(indicators, profiles.get('win_short'))
             sim_loss_long = self.calculate_similarity(indicators, profiles.get('loss_long'))
@@ -663,52 +678,11 @@ class MLTradingEngine:
             print(f"   Win LONG: {sim_win_long:.3f}, Win SHORT: {sim_win_short:.3f}")
             print(f"   Loss LONG: {sim_loss_long:.3f}, Loss SHORT: {sim_loss_short:.3f}")
             
-            # ========== NEW: Regime-Aware Confidence Adjustment ==========
-            # ONLY apply regime logic for HIGH/EXTREME volatility
-            # LOW/MEDIUM = calm markets = use old M1 system normally
-            regime_penalty = 1.0  # Default: no penalty
+            # SURGICAL FIX: Add volatility warning ONLY (no logic changes)
             regime_warning = None
-            
             if current_regime in ['HIGH', 'EXTREME']:
-                # High volatility detected - check if we have proven patterns
-                session = get_session()
-                
-                try:
-                    from database import Trade
-                    
-                    # Count trades in HIGH/EXTREME regimes
-                    high_vol_trades = session.query(Trade).filter(
-                        Trade.volatility_regime.in_(['HIGH', 'EXTREME']),
-                        Trade.exit_price.isnot(None)
-                    ).count()
-                    
-                    print(f"📊 High Volatility Regime Matching:")
-                    print(f"   Current regime: {current_regime}")
-                    print(f"   Historical HIGH/EXTREME trades: {high_vol_trades}")
-                    
-                    if high_vol_trades >= 5:
-                        # Good: Enough high-volatility experience
-                        regime_penalty = 1.0
-                        print(f"   ✅ Proven patterns in high volatility - no penalty")
-                    elif high_vol_trades >= 2:
-                        # Limited: Some high-vol data
-                        regime_penalty = 0.85
-                        regime_warning = f"{current_regime} volatility with limited historical data - slight confidence reduction"
-                        print(f"   ⚠️  {regime_warning}")
-                    else:
-                        # Risky: No high-volatility experience
-                        regime_penalty = 0.6
-                        regime_warning = f"{current_regime} volatility detected but no proven patterns - confidence reduced significantly"
-                        print(f"   🚨 {regime_warning}")
-                    
-                except Exception as e:
-                    print(f"⚠️  Regime check failed: {e}")
-                    regime_penalty = 1.0  # Failsafe: no penalty if check fails
-                finally:
-                    session.close()
-            else:
-                # LOW/MEDIUM volatility = calm market = use M1 normally
-                print(f"   ✅ {current_regime} volatility - using standard M1 profile matching")
+                regime_warning = f"⚠️ {current_regime} volatility detected - consider waiting for calmer market conditions for optimal entry"
+                print(f"   {regime_warning}")
             
             # Determine ML recommendation based on pattern matching
             # If similar to winning LONG → go LONG
@@ -743,14 +717,6 @@ class MLTradingEngine:
             # Combine ML pattern matching (50%) with rule-based signals (50%)
             long_final_prob = (ml_long_probability * 0.5) + (rule_normalized * 0.5)
             short_final_prob = (ml_short_probability * 0.5) + ((1 - rule_normalized) * 0.5)
-            
-            # ========== NEW: Apply Regime Penalty ==========
-            long_final_prob = long_final_prob * regime_penalty
-            short_final_prob = short_final_prob * regime_penalty
-            
-            if regime_penalty < 1.0:
-                print(f"🌡️  Regime penalty applied: {regime_penalty:.0%}")
-                print(f"   Adjusted LONG: {long_final_prob*100:.1f}%, SHORT: {short_final_prob*100:.1f}%")
             
             current_price = indicators.get('current_price', 0)
             atr = indicators.get('ATR', current_price * 0.02)
