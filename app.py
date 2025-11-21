@@ -667,11 +667,15 @@ if menu == "Market Analysis":
         col1, col2, col3 = st.columns([2, 2, 2])
         
         with col1:
+            # Default to AI recommendation direction
+            ai_signal = prediction.get('signal', 'LONG')
+            default_index = 1 if ai_signal == 'SHORT' else 0
+            
             manual_direction = st.selectbox(
                 "Trade Direction",
                 ["LONG", "SHORT"],
                 key="manual_direction",
-                index=0 if prediction['signal'] == 'LONG' else (1 if prediction['signal'] == 'SHORT' else 0)
+                index=default_index
             )
         
         with col2:
@@ -842,11 +846,15 @@ elif menu == "Trading Signals":
         col1, col2, col3 = st.columns([2, 2, 2])
         
         with col1:
+            # Default to AI recommendation direction
+            ai_signal = prediction.get('signal', 'LONG')
+            default_index = 1 if ai_signal == 'SHORT' else 0
+            
             manual_direction_signal = st.selectbox(
                 "Trade Direction",
                 ["LONG", "SHORT"],
                 key="manual_direction_signal",
-                index=0 if prediction['signal'] == 'LONG' else (1 if prediction['signal'] == 'SHORT' else 0)
+                index=default_index
             )
         
         with col2:
