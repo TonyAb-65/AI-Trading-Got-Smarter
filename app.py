@@ -531,14 +531,65 @@ if menu == "Market Analysis":
             use_container_width=True
         )
         
-        col1, col2, col3 = st.columns(3)
+        # Display ATR and volatility regime info
+        atr_val = latest_indicators.get('ATR', 0)
+        atr_pct = latest_indicators.get('ATR_pct_price', 0)
+        atr_percentile = latest_indicators.get('ATR_percentile', 50)
+        bb_width = latest_indicators.get('BB_width_pct', 0)
+        current_price = latest_indicators.get('current_price', 0)
+        
+        # ONE CLEAN ROW: ATR | ATR Percentile | BB Width | Patterns | S/R
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("ATR", f"${atr_val:,.2f}" if current_price > 100 else f"${atr_val:.4f}")
+            st.caption(f"{atr_pct:.2f}% of price")
+        
+        with col2:
+            st.metric("ATR Percentile", f"{atr_percentile:.1f}%")
+            if atr_percentile >= 75:
+                st.caption("🔴 Extreme")
+            elif atr_percentile >= 55:
+                st.caption("🟡 High")
+            elif atr_percentile >= 30:
+                st.caption("🟢 Medium")
+            else:
+                st.caption("🟢 Low")
+        
+        with col3:
+            st.metric("BB Width", f"{bb_width:.2f}%")
+            st.caption("Bollinger Band")
+        
+        with col4:
+            st.subheader("Patterns")
+            if patterns:
+                for pattern_name, signal in patterns.items():
+                    if signal == 'bullish':
+                        st.write(f"🟢 {pattern_name.replace('_', ' ')}")
+                    elif signal == 'bearish':
+                        st.write(f"🔴 {pattern_name.replace('_', ' ')}")
+            else:
+                st.info("None detected")
+        
+        with col5:
+            st.subheader("S/R Levels")
+            st.write("**Resistance:**")
+            for r in resistance_levels[:2]:
+                st.write(f"🔴 {format_price(r)}")
+            st.write("**Support:**")
+            for s in support_levels[:2]:
+                st.write(f"🟢 {format_price(s)}")
+        
+        st.divider()
+        
+        # Technical Signals and Smart Money in full-width sections below
+        col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("Technical Signals")
             for indicator, signal in signals.items():
                 color = "🟢" if signal in ['bullish', 'oversold', 'strong_uptrend'] else "🔴" if signal in ['bearish', 'overbought', 'strong_downtrend'] else "🟡"
                 
-                # Show raw values for ADX for transparency
                 if indicator == 'ADX':
                     adx_val = latest_indicators.get('ADX', 0)
                     di_plus = latest_indicators.get('DI_plus', 0)
@@ -547,85 +598,30 @@ if menu == "Market Analysis":
                     st.caption(f"   ADX: {adx_val:.1f} | +DI: {di_plus:.1f} | -DI: {di_minus:.1f}")
                 else:
                     st.write(f"{color} **{indicator}**: {signal}")
-            
-            st.divider()
-            st.subheader("🌡️ Volatility Metrics")
-            
-            # Display ATR and volatility regime info
-            atr_val = latest_indicators.get('ATR', 0)
-            atr_pct = latest_indicators.get('ATR_pct_price', 0)
-            atr_percentile = latest_indicators.get('ATR_percentile', 50)
-            current_price = latest_indicators.get('current_price', 0)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("ATR", f"${atr_val:,.2f}" if current_price > 100 else f"${atr_val:.4f}")
-                st.caption(f"{atr_pct:.2f}% of price")
-            with col2:
-                st.metric("ATR Percentile", f"{atr_percentile:.1f}%")
-                if atr_percentile >= 75:
-                    st.caption("🔴 Extreme volatility")
-                elif atr_percentile >= 55:
-                    st.caption("🟡 High volatility")
-                elif atr_percentile >= 30:
-                    st.caption("🟢 Medium volatility")
-                else:
-                    st.caption("🟢 Low volatility")
-            with col3:
-                bb_width = latest_indicators.get('BB_width_pct', 0)
-                st.metric("BB Width", f"{bb_width:.2f}%")
-                st.caption("Bollinger Band width")
-            
-            st.divider()
+        
+        with col2:
             st.subheader("🧠 Smart Money (OBV)")
             obv_ctx = trend_context.get('OBV', {})
             obv_slope = obv_ctx.get('slope', 0.0)
             obv_divergence = obv_ctx.get('divergence', 'none')
             
             if obv_divergence == 'bullish':
-                st.write("🟢 **Bullish Divergence** - Smart money accumulating")
-                st.caption(f"   Slope: {obv_slope:+.2f} (Price down, volume up)")
-                
-                # Show timing intelligence
+                st.write("🟢 **Bullish Divergence** - Accumulating")
+                st.caption(f"Slope: {obv_slope:+.2f}")
                 timing_info = get_divergence_timing_info('OBV', timeframe, 'bullish')
                 if timing_info:
-                    st.info(f"⏱️ **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
+                    st.caption(f"⏱️ Resolves in {timing_info['avg_candles']:.1f} candles | {timing_info['success_rate']:.0f}% success")
             elif obv_divergence == 'bearish':
-                st.write("🔴 **Bearish Divergence** - Smart money distributing")
-                st.caption(f"   Slope: {obv_slope:+.2f} (Price up, volume down)")
-                
-                # Show timing intelligence
+                st.write("🔴 **Bearish Divergence** - Distributing")
+                st.caption(f"Slope: {obv_slope:+.2f}")
                 timing_info = get_divergence_timing_info('OBV', timeframe, 'bearish')
                 if timing_info:
-                    speed_emoji = "⚠️" if timing_info['speed_class'] == 'fast' else "✅" if timing_info['speed_class'] == 'actionable' else "⏱️"
-                    st.info(f"{speed_emoji} **Timing Intel**: Typically resolves in {timing_info['avg_candles']:.1f} candles ({timing_info['avg_hours']:.1f}hrs) | Success: {timing_info['success_rate']:.0f}% | {timing_info['recommendation']}")
+                    st.caption(f"⏱️ Resolves in {timing_info['avg_candles']:.1f} candles | {timing_info['success_rate']:.0f}% success")
             else:
                 slope_direction = "Rising" if obv_slope > 0.5 else "Falling" if obv_slope < -0.5 else "Flat"
                 slope_color = "🟢" if obv_slope > 0.5 else "🔴" if obv_slope < -0.5 else "🟡"
-                st.write(f"{slope_color} **{slope_direction}** - No divergence")
-                st.caption(f"   Slope: {obv_slope:+.2f}")
-        
-        with col2:
-            st.subheader("Candlestick Patterns")
-            if patterns:
-                for pattern_name, signal in patterns.items():
-                    if signal == 'bullish':
-                        st.write(f"🟢 **{pattern_name.replace('_', ' ')}** (Bullish)")
-                    elif signal == 'bearish':
-                        st.write(f"🔴 **{pattern_name.replace('_', ' ')}** (Bearish)")
-                    else:
-                        st.write(f"🟡 **{pattern_name.replace('_', ' ')}** (Neutral)")
-            else:
-                st.info("No patterns detected")
-        
-        with col3:
-            st.subheader("Support & Resistance")
-            st.write("**Resistance Levels:**")
-            for r in resistance_levels:
-                st.write(f"🔴 {format_price(r)}")
-            st.write("**Support Levels:**")
-            for s in support_levels:
-                st.write(f"🟢 {format_price(s)}")
+                st.write(f"{slope_color} **{slope_direction}**")
+                st.caption(f"Slope: {obv_slope:+.2f}")
         
         if market_type == "crypto" and whale_data:
             st.subheader("🐋 Whale & Smart Money Analysis")
