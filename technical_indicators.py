@@ -58,6 +58,35 @@ class TechnicalIndicators:
         
         df['Volume_SMA'] = ta.sma(df['volume'], length=20)
         
+        # ========== NEW: Volatility Features for Regime Classification ==========
+        # ATR Percentile (relative to last 200 candles)
+        if len(df) >= 200:
+            df['ATR_percentile'] = df['ATR'].rolling(window=200, min_periods=50).apply(
+                lambda x: (x.iloc[-1] <= x).sum() / len(x) * 100 if len(x) > 0 else 50.0
+            )
+        else:
+            df['ATR_percentile'] = df['ATR'].expanding(min_periods=20).apply(
+                lambda x: (x.iloc[-1] <= x).sum() / len(x) * 100 if len(x) > 0 else 50.0
+            )
+        
+        # Bollinger Band Width Percentage (normalized volatility)
+        if 'BB_upper' in df.columns and 'BB_lower' in df.columns and 'BB_middle' in df.columns:
+            df['BB_width_pct'] = ((df['BB_upper'] - df['BB_lower']) / df['BB_middle']) * 100
+        
+        # Rolling Variance (14 and 50 period price variance)
+        df['variance_14'] = df['close'].pct_change().rolling(window=14).var() * 100
+        df['variance_50'] = df['close'].pct_change().rolling(window=50).var() * 100
+        
+        # Wick-to-Body Ratio (measures panic/indecision)
+        df['body_size'] = abs(df['close'] - df['open'])
+        df['upper_wick'] = df['high'] - df[['close', 'open']].max(axis=1)
+        df['lower_wick'] = df[['close', 'open']].min(axis=1) - df['low']
+        df['total_wick'] = df['upper_wick'] + df['lower_wick']
+        df['wick_to_body_ratio'] = df['total_wick'] / (df['body_size'] + 0.0001)  # Avoid division by zero
+        
+        # ATR as percentage of price (normalized volatility)
+        df['ATR_pct_price'] = (df['ATR'] / df['close']) * 100
+        
         self.df = df
         return df
     
@@ -91,7 +120,14 @@ class TechnicalIndicators:
             'ATR': latest.get('ATR'),
             'Volume_SMA': latest.get('Volume_SMA'),
             'current_price': latest.get('close'),
-            'volume': latest.get('volume')
+            'volume': latest.get('volume'),
+            # NEW: Volatility features
+            'ATR_percentile': latest.get('ATR_percentile'),
+            'BB_width_pct': latest.get('BB_width_pct'),
+            'variance_14': latest.get('variance_14'),
+            'variance_50': latest.get('variance_50'),
+            'wick_to_body_ratio': latest.get('wick_to_body_ratio'),
+            'ATR_pct_price': latest.get('ATR_pct_price')
         }
         
         return {k: float(v) if pd.notna(v) else None for k, v in indicators.items()}
