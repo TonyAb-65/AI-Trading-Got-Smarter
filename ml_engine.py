@@ -664,64 +664,51 @@ class MLTradingEngine:
             print(f"   Loss LONG: {sim_loss_long:.3f}, Loss SHORT: {sim_loss_short:.3f}")
             
             # ========== NEW: Regime-Aware Confidence Adjustment ==========
-            # Check if historical profiles match current regime
-            session = get_session()
+            # ONLY apply regime logic for HIGH/EXTREME volatility
+            # LOW/MEDIUM = calm markets = use old M1 system normally
             regime_penalty = 1.0  # Default: no penalty
             regime_warning = None
             
-            try:
-                # Count trades in current regime
-                from database import Trade
-                current_regime_trades = session.query(Trade).filter(
-                    Trade.volatility_regime == current_regime,
-                    Trade.exit_price.isnot(None)
-                ).count()
+            if current_regime in ['HIGH', 'EXTREME']:
+                # High volatility detected - check if we have proven patterns
+                session = get_session()
                 
-                # Flexible matching: Also count adjacent regimes
-                regime_order = ['LOW', 'MEDIUM', 'HIGH', 'EXTREME']
-                current_idx = regime_order.index(current_regime) if current_regime in regime_order else 1
-                adjacent_regimes = []
-                
-                if current_idx > 0:
-                    adjacent_regimes.append(regime_order[current_idx - 1])
-                if current_idx < len(regime_order) - 1:
-                    adjacent_regimes.append(regime_order[current_idx + 1])
-                
-                adjacent_trades = session.query(Trade).filter(
-                    Trade.volatility_regime.in_(adjacent_regimes),
-                    Trade.exit_price.isnot(None)
-                ).count() if adjacent_regimes else 0
-                
-                print(f"📊 Regime Matching:")
-                print(f"   Current regime ({current_regime}): {current_regime_trades} historical trades")
-                print(f"   Adjacent regimes ({adjacent_regimes}): {adjacent_trades} historical trades")
-                
-                # Apply flexible penalty based on data availability
-                if current_regime_trades >= 5:
-                    # Good: Enough trades in current regime
-                    regime_penalty = 1.0
-                    print(f"   ✅ Strong regime match - no confidence penalty")
-                elif current_regime_trades + adjacent_trades >= 3:
-                    # Acceptable: Some trades in nearby regimes
-                    regime_penalty = 0.85
-                    regime_warning = f"Limited data in {current_regime} regime - slight confidence reduction"
-                    print(f"   ⚠️  {regime_warning}")
-                elif current_regime in ['HIGH', 'EXTREME']:
-                    # Risky: High volatility with no historical matches
-                    regime_penalty = 0.6
-                    regime_warning = f"{current_regime} volatility detected but no proven patterns - confidence reduced"
-                    print(f"   🚨 {regime_warning}")
-                else:
-                    # LOW/MEDIUM regime with no data - less risky
-                    regime_penalty = 0.9
-                    regime_warning = f"New {current_regime} regime - minimal confidence reduction"
-                    print(f"   ℹ️  {regime_warning}")
-                
-            except Exception as e:
-                print(f"⚠️  Regime check failed: {e}")
-                regime_penalty = 1.0  # Failsafe: no penalty if check fails
-            finally:
-                session.close()
+                try:
+                    from database import Trade
+                    
+                    # Count trades in HIGH/EXTREME regimes
+                    high_vol_trades = session.query(Trade).filter(
+                        Trade.volatility_regime.in_(['HIGH', 'EXTREME']),
+                        Trade.exit_price.isnot(None)
+                    ).count()
+                    
+                    print(f"📊 High Volatility Regime Matching:")
+                    print(f"   Current regime: {current_regime}")
+                    print(f"   Historical HIGH/EXTREME trades: {high_vol_trades}")
+                    
+                    if high_vol_trades >= 5:
+                        # Good: Enough high-volatility experience
+                        regime_penalty = 1.0
+                        print(f"   ✅ Proven patterns in high volatility - no penalty")
+                    elif high_vol_trades >= 2:
+                        # Limited: Some high-vol data
+                        regime_penalty = 0.85
+                        regime_warning = f"{current_regime} volatility with limited historical data - slight confidence reduction"
+                        print(f"   ⚠️  {regime_warning}")
+                    else:
+                        # Risky: No high-volatility experience
+                        regime_penalty = 0.6
+                        regime_warning = f"{current_regime} volatility detected but no proven patterns - confidence reduced significantly"
+                        print(f"   🚨 {regime_warning}")
+                    
+                except Exception as e:
+                    print(f"⚠️  Regime check failed: {e}")
+                    regime_penalty = 1.0  # Failsafe: no penalty if check fails
+                finally:
+                    session.close()
+            else:
+                # LOW/MEDIUM volatility = calm market = use M1 normally
+                print(f"   ✅ {current_regime} volatility - using standard M1 profile matching")
             
             # Determine ML recommendation based on pattern matching
             # If similar to winning LONG → go LONG
