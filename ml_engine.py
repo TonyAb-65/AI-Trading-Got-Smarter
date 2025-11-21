@@ -38,7 +38,10 @@ class MLTradingEngine:
             'RSI', 'MACD', 'MACD_hist', 'Stoch_K', 'Stoch_D',
             'MFI', 'CCI', 'ADX', 'DI_plus', 'DI_minus',
             'current_price', 'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
-            'BB_upper', 'BB_middle', 'BB_lower', 'ATR', 'volume', 'Volume_SMA'
+            'BB_upper', 'BB_middle', 'BB_lower', 'ATR', 'volume', 'Volume_SMA',
+            # NEW: Volatility features for regime classification
+            'ATR_percentile', 'BB_width_pct', 'variance_14', 'variance_50',
+            'wick_to_body_ratio', 'ATR_pct_price'
         ]
         
         # Add trade direction as first feature (1.0 for LONG, -1.0 for SHORT, 0.0 for unknown)
@@ -208,6 +211,51 @@ class MLTradingEngine:
         ]
         
         return np.array(features).reshape(1, -1)
+    
+    def classify_volatility_regime(self, indicators):
+        """
+        Classify current market volatility regime based on multiple volatility metrics.
+        
+        Returns:
+            tuple: (regime_label, regime_score)
+                regime_label: 'LOW', 'MEDIUM', 'HIGH', or 'EXTREME'
+                regime_score: Numerical score 0-100
+        """
+        atr_percentile = indicators.get('ATR_percentile', 50.0)
+        bb_width_pct = indicators.get('BB_width_pct', 0.0)
+        variance_14 = indicators.get('variance_14', 0.0)
+        wick_ratio = indicators.get('wick_to_body_ratio', 1.0)
+        
+        # Primary classifier: ATR Percentile (most reliable)
+        # Secondary factors: BB width, variance, wicks
+        
+        # Calculate composite volatility score (0-100)
+        score = atr_percentile * 0.5  # 50% weight on ATR percentile
+        
+        # BB width contribution (normalize to 0-100 scale, 10% price range = 100)
+        bb_contribution = min(bb_width_pct / 10.0 * 100, 100) * 0.2  # 20% weight
+        score += bb_contribution
+        
+        # Variance contribution (normalize to 0-100 scale)
+        variance_contribution = min(variance_14 * 10, 100) * 0.2  # 20% weight
+        score += variance_contribution
+        
+        # Wick ratio contribution (high wicks = panic/volatility)
+        # Normal wick ratio is 1-2, extreme is >5
+        wick_contribution = min((wick_ratio - 1.0) / 4.0 * 100, 100) * 0.1  # 10% weight
+        score += wick_contribution
+        
+        # Classify into regime based on score
+        if score < 30:
+            regime = 'LOW'
+        elif score < 55:
+            regime = 'MEDIUM'
+        elif score < 75:
+            regime = 'HIGH'
+        else:
+            regime = 'EXTREME'
+        
+        return regime, min(score, 100.0)
     
     def build_trade_profiles(self):
         """
@@ -590,6 +638,14 @@ class MLTradingEngine:
         rule_based_result = self._rule_based_prediction(indicators)
         
         try:
+            # ========== NEW: Volatility Regime Classification ==========
+            current_regime, regime_score = self.classify_volatility_regime(indicators)
+            print(f"🌡️  Current Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
+            
+            # Store regime in indicators for later use
+            indicators['volatility_regime'] = current_regime
+            indicators['volatility_score'] = regime_score
+            
             # Build profiles from historical trades
             profiles = self.build_trade_profiles()
             
@@ -606,6 +662,66 @@ class MLTradingEngine:
             print(f"📊 Pattern Similarity Scores:")
             print(f"   Win LONG: {sim_win_long:.3f}, Win SHORT: {sim_win_short:.3f}")
             print(f"   Loss LONG: {sim_loss_long:.3f}, Loss SHORT: {sim_loss_short:.3f}")
+            
+            # ========== NEW: Regime-Aware Confidence Adjustment ==========
+            # Check if historical profiles match current regime
+            session = get_session()
+            regime_penalty = 1.0  # Default: no penalty
+            regime_warning = None
+            
+            try:
+                # Count trades in current regime
+                from database import Trade
+                current_regime_trades = session.query(Trade).filter(
+                    Trade.volatility_regime == current_regime,
+                    Trade.exit_price.isnot(None)
+                ).count()
+                
+                # Flexible matching: Also count adjacent regimes
+                regime_order = ['LOW', 'MEDIUM', 'HIGH', 'EXTREME']
+                current_idx = regime_order.index(current_regime) if current_regime in regime_order else 1
+                adjacent_regimes = []
+                
+                if current_idx > 0:
+                    adjacent_regimes.append(regime_order[current_idx - 1])
+                if current_idx < len(regime_order) - 1:
+                    adjacent_regimes.append(regime_order[current_idx + 1])
+                
+                adjacent_trades = session.query(Trade).filter(
+                    Trade.volatility_regime.in_(adjacent_regimes),
+                    Trade.exit_price.isnot(None)
+                ).count() if adjacent_regimes else 0
+                
+                print(f"📊 Regime Matching:")
+                print(f"   Current regime ({current_regime}): {current_regime_trades} historical trades")
+                print(f"   Adjacent regimes ({adjacent_regimes}): {adjacent_trades} historical trades")
+                
+                # Apply flexible penalty based on data availability
+                if current_regime_trades >= 5:
+                    # Good: Enough trades in current regime
+                    regime_penalty = 1.0
+                    print(f"   ✅ Strong regime match - no confidence penalty")
+                elif current_regime_trades + adjacent_trades >= 3:
+                    # Acceptable: Some trades in nearby regimes
+                    regime_penalty = 0.85
+                    regime_warning = f"Limited data in {current_regime} regime - slight confidence reduction"
+                    print(f"   ⚠️  {regime_warning}")
+                elif current_regime in ['HIGH', 'EXTREME']:
+                    # Risky: High volatility with no historical matches
+                    regime_penalty = 0.6
+                    regime_warning = f"{current_regime} volatility detected but no proven patterns - confidence reduced"
+                    print(f"   🚨 {regime_warning}")
+                else:
+                    # LOW/MEDIUM regime with no data - less risky
+                    regime_penalty = 0.9
+                    regime_warning = f"New {current_regime} regime - minimal confidence reduction"
+                    print(f"   ℹ️  {regime_warning}")
+                
+            except Exception as e:
+                print(f"⚠️  Regime check failed: {e}")
+                regime_penalty = 1.0  # Failsafe: no penalty if check fails
+            finally:
+                session.close()
             
             # Determine ML recommendation based on pattern matching
             # If similar to winning LONG → go LONG
@@ -641,6 +757,14 @@ class MLTradingEngine:
             long_final_prob = (ml_long_probability * 0.5) + (rule_normalized * 0.5)
             short_final_prob = (ml_short_probability * 0.5) + ((1 - rule_normalized) * 0.5)
             
+            # ========== NEW: Apply Regime Penalty ==========
+            long_final_prob = long_final_prob * regime_penalty
+            short_final_prob = short_final_prob * regime_penalty
+            
+            if regime_penalty < 1.0:
+                print(f"🌡️  Regime penalty applied: {regime_penalty:.0%}")
+                print(f"   Adjusted LONG: {long_final_prob*100:.1f}%, SHORT: {short_final_prob*100:.1f}%")
+            
             current_price = indicators.get('current_price', 0)
             atr = indicators.get('ATR', current_price * 0.02)
             min_distance = max(atr, current_price * 0.002)
@@ -660,6 +784,12 @@ class MLTradingEngine:
                 recommendation = f"Strong LONG signal. Enter at {entry_price:.2f}"
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
                 reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
+                
+                # NEW: Add volatility regime info
+                reasons.append(f"Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
+                if regime_warning:
+                    reasons.append(f"⚠️ {regime_warning}")
+                
                 final_probability = long_final_prob
                 ml_win_probability = ml_long_probability
                 
@@ -689,6 +819,12 @@ class MLTradingEngine:
                 recommendation = f"Strong SHORT signal. Enter at {entry_price:.2f}"
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
                 reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
+                
+                # NEW: Add volatility regime info
+                reasons.append(f"Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
+                if regime_warning:
+                    reasons.append(f"⚠️ {regime_warning}")
+                
                 final_probability = short_final_prob
                 ml_win_probability = ml_short_probability
                 
