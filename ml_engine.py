@@ -36,6 +36,52 @@ class MLTradingEngine:
         self._load_indicator_weights()
         self._load_m2_model()  # Load M2 model if exists
     
+    def calculate_safe_tp(self, entry_price, atr_tp, signal, support_levels, resistance_levels):
+        """
+        Calculate safe Take Profit that respects support/resistance levels.
+        Places TP BEFORE key levels to avoid bounce-reversal scenarios.
+        
+        Args:
+            entry_price: Entry price
+            atr_tp: ATR-based TP target (momentum-based)
+            signal: 'LONG' or 'SHORT'
+            support_levels: List of support prices below current price
+            resistance_levels: List of resistance prices above current price
+        
+        Returns:
+            Adjusted TP price that stops before S/R levels
+        """
+        # Safety buffer: stop 0.3% before S/R level to ensure fill
+        buffer_pct = 0.003
+        
+        if signal == 'LONG':
+            # For LONG: Check if any resistance between entry and ATR target
+            if resistance_levels:
+                for resistance in sorted(resistance_levels):
+                    # If resistance is between entry and target
+                    if entry_price < resistance < atr_tp:
+                        # Place TP just before resistance
+                        safe_tp = resistance * (1 - buffer_pct)
+                        print(f"📊 TP adjusted: {atr_tp:.2f} → {safe_tp:.2f} (stops before resistance at {resistance:.2f})")
+                        return safe_tp
+            # No resistance in the way, use ATR target
+            return atr_tp
+        
+        elif signal == 'SHORT':
+            # For SHORT: Check if any support between ATR target and entry
+            if support_levels:
+                for support in sorted(support_levels, reverse=True):
+                    # If support is between target and entry
+                    if atr_tp < support < entry_price:
+                        # Place TP just before support
+                        safe_tp = support * (1 + buffer_pct)
+                        print(f"📊 TP adjusted: {atr_tp:.2f} → {safe_tp:.2f} (stops before support at {support:.2f})")
+                        return safe_tp
+            # No support in the way, use ATR target
+            return atr_tp
+        
+        return atr_tp
+    
     def prepare_features(self, indicators, trade_type=None):
         """
         Prepare features for ML models - ORIGINAL VERSION (no volatility features)
@@ -733,7 +779,13 @@ class MLTradingEngine:
                 signal = 'LONG'
                 entry_price = current_price
                 stop_loss = current_price - (2 * min_distance)
-                take_profit = current_price + (3 * min_distance)
+                
+                # Calculate ATR-based TP, then adjust for support/resistance
+                atr_tp = current_price + (3 * min_distance)
+                support_levels = indicators.get('support_levels', [])
+                resistance_levels = indicators.get('resistance_levels', [])
+                take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'LONG', support_levels, resistance_levels)
+                
                 recommendation = f"Strong LONG signal. Enter at {entry_price:.2f}"
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
                 reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
@@ -768,7 +820,13 @@ class MLTradingEngine:
                 signal = 'SHORT'
                 entry_price = current_price
                 stop_loss = current_price + (2 * min_distance)
-                take_profit = current_price - (3 * min_distance)
+                
+                # Calculate ATR-based TP, then adjust for support/resistance
+                atr_tp = current_price - (3 * min_distance)
+                support_levels = indicators.get('support_levels', [])
+                resistance_levels = indicators.get('resistance_levels', [])
+                take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'SHORT', support_levels, resistance_levels)
+                
                 recommendation = f"Strong SHORT signal. Enter at {entry_price:.2f}"
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
                 reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
@@ -1112,14 +1170,26 @@ class MLTradingEngine:
             confidence = min(95, (bullish_signals / total_signals) * 100)
             entry_price = current_price
             stop_loss = current_price - (2 * min_distance)
-            take_profit = current_price + (3 * min_distance)
+            
+            # Calculate ATR-based TP, then adjust for support/resistance
+            atr_tp = current_price + (3 * min_distance)
+            support_levels = indicators.get('support_levels', [])
+            resistance_levels = indicators.get('resistance_levels', [])
+            take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'LONG', support_levels, resistance_levels)
+            
             recommendation = f"Rule-based LONG signal (no ML training yet)"
         elif bearish_signals > bullish_signals * 1.5:
             signal = 'SHORT'
             confidence = min(95, (bearish_signals / total_signals) * 100)
             entry_price = current_price
             stop_loss = current_price + (2 * min_distance)
-            take_profit = current_price - (3 * min_distance)
+            
+            # Calculate ATR-based TP, then adjust for support/resistance
+            atr_tp = current_price - (3 * min_distance)
+            support_levels = indicators.get('support_levels', [])
+            resistance_levels = indicators.get('resistance_levels', [])
+            take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'SHORT', support_levels, resistance_levels)
+            
             recommendation = f"Rule-based SHORT signal (no ML training yet)"
         else:
             signal = 'HOLD'
