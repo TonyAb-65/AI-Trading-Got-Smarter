@@ -1577,76 +1577,80 @@ elif menu == "Performance Analytics":
         
         st.caption(f"Showing {len(filtered_trades)} of {len(trades)} trades")
         
-        for trade in reversed(filtered_trades):
-            exit_time_riyadh = convert_to_riyadh_time(trade.exit_time) if trade.exit_time else None
-            exit_time_str = exit_time_riyadh.strftime('%Y-%m-%d %H:%M') if exit_time_riyadh else 'N/A'
-            
-            with st.expander(f"{trade.symbol} ({trade.trade_type}) - {trade.outcome.upper()} - {exit_time_str}"):
-                col1, col2, col3, col4 = st.columns(4)
+        # Show/Hide toggle for trade history table
+        show_trade_history = st.checkbox("📋 Show Trade History Details", value=False, key="show_trade_history")
+        
+        if show_trade_history:
+            for trade in reversed(filtered_trades):
+                exit_time_riyadh = convert_to_riyadh_time(trade.exit_time) if trade.exit_time else None
+                exit_time_str = exit_time_riyadh.strftime('%Y-%m-%d %H:%M') if exit_time_riyadh else 'N/A'
                 
-                with col1:
-                    st.metric("Entry Price", format_price(trade.entry_price))
-                with col2:
-                    st.metric("Exit Price", format_price(trade.exit_price))
-                with col3:
-                    pnl_color = "normal" if trade.profit_loss_percentage and trade.profit_loss_percentage >= 0 else "inverse"
-                    st.metric("P&L", f"{trade.profit_loss_percentage:.2f}%" if trade.profit_loss_percentage else "N/A", delta_color=pnl_color)
-                with col4:
-                    outcome_emoji = "✅" if trade.outcome == "win" else "❌"
-                    st.metric("Outcome", f"{outcome_emoji} {trade.outcome.upper()}")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if trade.exit_type:
-                        exit_emoji = "🎯" if "TO Achieved" in trade.exit_type else "👤"
-                        st.write(f"**Exit Type:** {exit_emoji} {trade.exit_type}")
-                    else:
-                        st.write("**Exit Type:** Not recorded")
+                with st.expander(f"{trade.symbol} ({trade.trade_type}) - {trade.outcome.upper()} - {exit_time_str}"):
+                    col1, col2, col3, col4 = st.columns(4)
                     
-                    entry_time_riyadh = convert_to_riyadh_time(trade.entry_time)
-                    st.write(f"**Entry Time:** {entry_time_riyadh.strftime('%Y-%m-%d %H:%M')} (Riyadh)")
-                    st.write(f"**Exit Time:** {exit_time_str} (Riyadh)" if exit_time_riyadh else "**Exit Time:** N/A")
-                
-                with col2:
-                    if trade.quantity:
-                        st.write(f"**Quantity:** {trade.quantity}")
-                    if trade.profit_loss:
-                        st.write(f"**Total P&L:** ${trade.profit_loss:.2f}")
-                
-                if trade.notes:
-                    st.write("**Exit Notes:**")
-                    st.info(trade.notes)
-                
-                st.divider()
-                
-                if f"delete_confirm_{trade.id}" not in st.session_state:
-                    st.session_state[f"delete_confirm_{trade.id}"] = False
-                
-                col_del1, col_del2 = st.columns([3, 1])
-                with col_del2:
-                    if not st.session_state[f"delete_confirm_{trade.id}"]:
-                        if st.button("🗑️ Delete Trade", key=f"delete_btn_{trade.id}", type="secondary"):
-                            st.session_state[f"delete_confirm_{trade.id}"] = True
-                            st.rerun()
-                    else:
-                        st.warning("⚠️ Are you sure? This cannot be undone!")
-                        col_confirm1, col_confirm2 = st.columns(2)
-                        with col_confirm1:
-                            if st.button("✅ Yes, Delete", key=f"confirm_delete_{trade.id}", type="primary"):
-                                try:
-                                    session.delete(trade)
-                                    session.commit()
-                                    st.session_state[f"delete_confirm_{trade.id}"] = False
-                                    st.success(f"✅ Deleted {trade.symbol} trade!")
-                                    st.rerun()
-                                except Exception as e:
-                                    session.rollback()
-                                    st.error(f"❌ Error deleting trade: {str(e)}")
-                        with col_confirm2:
-                            if st.button("❌ Cancel", key=f"cancel_delete_{trade.id}"):
-                                st.session_state[f"delete_confirm_{trade.id}"] = False
+                    with col1:
+                        st.metric("Entry Price", format_price(trade.entry_price))
+                    with col2:
+                        st.metric("Exit Price", format_price(trade.exit_price))
+                    with col3:
+                        pnl_color = "normal" if trade.profit_loss_percentage and trade.profit_loss_percentage >= 0 else "inverse"
+                        st.metric("P&L", f"{trade.profit_loss_percentage:.2f}%" if trade.profit_loss_percentage else "N/A", delta_color=pnl_color)
+                    with col4:
+                        outcome_emoji = "✅" if trade.outcome == "win" else "❌"
+                        st.metric("Outcome", f"{outcome_emoji} {trade.outcome.upper()}")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if trade.exit_type:
+                            exit_emoji = "🎯" if "TO Achieved" in trade.exit_type else "👤"
+                            st.write(f"**Exit Type:** {exit_emoji} {trade.exit_type}")
+                        else:
+                            st.write("**Exit Type:** Not recorded")
+                        
+                        entry_time_riyadh = convert_to_riyadh_time(trade.entry_time)
+                        st.write(f"**Entry Time:** {entry_time_riyadh.strftime('%Y-%m-%d %H:%M')} (Riyadh)")
+                        st.write(f"**Exit Time:** {exit_time_str} (Riyadh)" if exit_time_riyadh else "**Exit Time:** N/A")
+                    
+                    with col2:
+                        if trade.quantity:
+                            st.write(f"**Quantity:** {trade.quantity}")
+                        if trade.profit_loss:
+                            st.write(f"**Total P&L:** ${trade.profit_loss:.2f}")
+                    
+                    if trade.notes:
+                        st.write("**Exit Notes:**")
+                        st.info(trade.notes)
+                    
+                    st.divider()
+                    
+                    if f"delete_confirm_{trade.id}" not in st.session_state:
+                        st.session_state[f"delete_confirm_{trade.id}"] = False
+                    
+                    col_del1, col_del2 = st.columns([3, 1])
+                    with col_del2:
+                        if not st.session_state[f"delete_confirm_{trade.id}"]:
+                            if st.button("🗑️ Delete Trade", key=f"delete_btn_{trade.id}", type="secondary"):
+                                st.session_state[f"delete_confirm_{trade.id}"] = True
                                 st.rerun()
+                        else:
+                            st.warning("⚠️ Are you sure? This cannot be undone!")
+                            col_confirm1, col_confirm2 = st.columns(2)
+                            with col_confirm1:
+                                if st.button("✅ Yes, Delete", key=f"confirm_delete_{trade.id}", type="primary"):
+                                    try:
+                                        session.delete(trade)
+                                        session.commit()
+                                        st.session_state[f"delete_confirm_{trade.id}"] = False
+                                        st.success(f"✅ Deleted {trade.symbol} trade!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        session.rollback()
+                                        st.error(f"❌ Error deleting trade: {str(e)}")
+                            with col_confirm2:
+                                if st.button("❌ Cancel", key=f"cancel_delete_{trade.id}"):
+                                    st.session_state[f"delete_confirm_{trade.id}"] = False
+                                    st.rerun()
         
         st.divider()
         st.subheader("Model Performance")
