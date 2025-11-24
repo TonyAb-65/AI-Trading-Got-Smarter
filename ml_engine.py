@@ -82,6 +82,44 @@ class MLTradingEngine:
         
         return atr_tp
     
+    def get_adaptive_ml_weight(self):
+        """
+        Calculate adaptive ML weight based on trade count.
+        As system learns from more trades, ML's learned patterns should dominate over hardcoded rules.
+        
+        Returns:
+            float: ML weight (0.0 to 1.0)
+                0-10 trades: 0.2 (20% ML, 80% rules - bootstrap phase)
+                10-30 trades: 0.5 (50% ML, 50% rules - learning phase)
+                30+ trades: 0.8 (80% ML, 20% rules - mature phase)
+        """
+        session = get_session()
+        try:
+            trade_count = session.query(Trade).filter(
+                Trade.exit_price.isnot(None),
+                Trade.outcome.isnot(None),
+                Trade.indicators_at_entry.isnot(None)
+            ).count()
+            
+            if trade_count < 10:
+                ml_weight = 0.2
+                phase = "Bootstrap"
+            elif trade_count < 30:
+                ml_weight = 0.5
+                phase = "Learning"
+            else:
+                ml_weight = 0.8
+                phase = "Mature"
+            
+            print(f"🧠 Adaptive Learning: {trade_count} trades → {ml_weight*100:.0f}% ML, {(1-ml_weight)*100:.0f}% Rules ({phase} phase)")
+            return ml_weight
+            
+        except Exception as e:
+            print(f"Error calculating adaptive weight: {e}")
+            return 0.5
+        finally:
+            session.close()
+    
     def prepare_features(self, indicators, trade_type=None):
         """
         Prepare features for ML models - ORIGINAL VERSION (no volatility features)
@@ -760,9 +798,13 @@ class MLTradingEngine:
             rule_normalized = (rule_score + 20) / 40
             rule_normalized = max(0, min(1, rule_normalized))
             
-            # Combine ML pattern matching (50%) with rule-based signals (50%)
-            long_final_prob = (ml_long_probability * 0.5) + (rule_normalized * 0.5)
-            short_final_prob = (ml_short_probability * 0.5) + ((1 - rule_normalized) * 0.5)
+            # ADAPTIVE WEIGHTING: Combine ML pattern matching with rule-based signals
+            # Weight adjusts based on trade count (more trades = trust ML more)
+            ml_weight = self.get_adaptive_ml_weight()
+            rule_weight = 1 - ml_weight
+            
+            long_final_prob = (ml_long_probability * ml_weight) + (rule_normalized * rule_weight)
+            short_final_prob = (ml_short_probability * ml_weight) + ((1 - rule_normalized) * rule_weight)
             
             current_price = indicators.get('current_price', 0)
             atr = indicators.get('ATR', current_price * 0.02)
@@ -788,7 +830,7 @@ class MLTradingEngine:
                 
                 recommendation = f"Strong LONG signal. Enter at {entry_price:.2f}"
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
-                reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
+                reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
                 
                 # NEW: Add volatility regime info
                 reasons.append(f"Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
@@ -829,7 +871,7 @@ class MLTradingEngine:
                 
                 recommendation = f"Strong SHORT signal. Enter at {entry_price:.2f}"
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
-                reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
+                reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
                 
                 # NEW: Add volatility regime info
                 reasons.append(f"Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
@@ -864,7 +906,7 @@ class MLTradingEngine:
                 take_profit = None
                 recommendation = "No clear signal. Wait for better opportunity."
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
-                reasons.append(f"Final (50% ML + 50% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
+                reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
                 final_probability = max(long_final_prob, short_final_prob)
                 ml_win_probability = max(ml_long_probability, ml_short_probability)
             
@@ -916,65 +958,18 @@ class MLTradingEngine:
         
         rsi = indicators.get('RSI')
         if rsi:
-            duration = rsi_ctx.get('duration_candles', 0)
-            slope = rsi_ctx.get('slope', 0.0)
-            divergence = rsi_ctx.get('divergence', 'none')
-            
+            # Let ML learn temporal patterns - rules only provide basic signals
             if rsi < 30:
-                base_signal = 2 * rsi_weight
-                # Duration bonus: longer oversold = stronger reversal signal
-                duration_bonus = min(2.0, duration / 10) if duration > 10 else 0
-                # Momentum bonus: rising while oversold = bullish
-                momentum_bonus = 1.0 if slope > 0.5 else 0
-                # Divergence bonus
-                divergence_bonus = 1.5 if divergence == 'bullish' else 0
-                
-                total_signal = base_signal + duration_bonus + momentum_bonus + divergence_bonus
-                bullish_signals += total_signal
-                
-                context_info = []
-                if duration > 10:
-                    context_info.append(f"{duration} candles")
-                if slope > 0.5:
-                    context_info.append("rising momentum")
-                if divergence == 'bullish':
-                    context_info.append("bullish divergence")
-                
-                reason = f"RSI oversold ({rsi:.1f})"
-                if context_info:
-                    reason += f" [{', '.join(context_info)}]"
-                reason += f" - strong buy signal (weight: {rsi_weight:.1f}x + {total_signal - base_signal:.1f} bonus)"
-                reasons.append(reason)
+                bullish_signals += 2 * rsi_weight
+                reasons.append(f"RSI oversold ({rsi:.1f}) - strong buy signal (weight: {rsi_weight:.1f}x + 0.0 bonus)")
                 
             elif rsi < 40:
                 bullish_signals += 1 * rsi_weight
                 reasons.append(f"RSI below 40 ({rsi:.1f}) - buy signal (weight: {rsi_weight:.1f}x)")
                 
             elif rsi > 70:
-                base_signal = 2 * rsi_weight
-                # Duration bonus: longer overbought = stronger reversal signal
-                duration_bonus = min(2.0, duration / 10) if duration > 10 else 0
-                # Momentum bonus: falling while overbought = bearish
-                momentum_bonus = 1.0 if slope < -0.5 else 0
-                # Divergence bonus
-                divergence_bonus = 1.5 if divergence == 'bearish' else 0
-                
-                total_signal = base_signal + duration_bonus + momentum_bonus + divergence_bonus
-                bearish_signals += total_signal
-                
-                context_info = []
-                if duration > 10:
-                    context_info.append(f"{duration} candles")
-                if slope < -0.5:
-                    context_info.append("falling momentum")
-                if divergence == 'bearish':
-                    context_info.append("bearish divergence")
-                
-                reason = f"RSI overbought ({rsi:.1f})"
-                if context_info:
-                    reason += f" [{', '.join(context_info)}]"
-                reason += f" - strong sell signal (weight: {rsi_weight:.1f}x + {total_signal - base_signal:.1f} bonus)"
-                reasons.append(reason)
+                bearish_signals += 2 * rsi_weight
+                reasons.append(f"RSI overbought ({rsi:.1f}) - strong sell signal (weight: {rsi_weight:.1f}x + 0.0 bonus)")
                 
             elif rsi > 60:
                 bearish_signals += 1 * rsi_weight
@@ -997,55 +992,14 @@ class MLTradingEngine:
         
         stoch_k = indicators.get('Stoch_K')
         if stoch_k:
-            duration = stoch_ctx.get('duration_candles', 0)
-            slope = stoch_ctx.get('slope', 0.0)
-            divergence = stoch_ctx.get('divergence', 'none')
-            
+            # Let ML learn temporal patterns - rules only provide basic signals
             if stoch_k < 20:
-                base_signal = 1 * stoch_weight
-                duration_bonus = min(1.0, duration / 15) if duration > 10 else 0
-                momentum_bonus = 0.5 if slope > 0.5 else 0
-                divergence_bonus = 1.0 if divergence == 'bullish' else 0
-                
-                total_signal = base_signal + duration_bonus + momentum_bonus + divergence_bonus
-                bullish_signals += total_signal
-                
-                context_info = []
-                if duration > 10:
-                    context_info.append(f"{duration} candles")
-                if slope > 0.5:
-                    context_info.append("rising")
-                if divergence == 'bullish':
-                    context_info.append("bullish div")
-                
-                reason = f"Stochastic oversold ({stoch_k:.1f})"
-                if context_info:
-                    reason += f" [{', '.join(context_info)}]"
-                reason += f" (weight: {stoch_weight:.1f}x + {total_signal - base_signal:.1f} bonus)"
-                reasons.append(reason)
+                bullish_signals += 1 * stoch_weight
+                reasons.append(f"Stochastic oversold ({stoch_k:.1f}) (weight: {stoch_weight:.1f}x + 0.0 bonus)")
                 
             elif stoch_k > 80:
-                base_signal = 1 * stoch_weight
-                duration_bonus = min(1.0, duration / 15) if duration > 10 else 0
-                momentum_bonus = 0.5 if slope < -0.5 else 0
-                divergence_bonus = 1.0 if divergence == 'bearish' else 0
-                
-                total_signal = base_signal + duration_bonus + momentum_bonus + divergence_bonus
-                bearish_signals += total_signal
-                
-                context_info = []
-                if duration > 10:
-                    context_info.append(f"{duration} candles")
-                if slope < -0.5:
-                    context_info.append("falling")
-                if divergence == 'bearish':
-                    context_info.append("bearish div")
-                
-                reason = f"Stochastic overbought ({stoch_k:.1f})"
-                if context_info:
-                    reason += f" [{', '.join(context_info)}]"
-                reason += f" (weight: {stoch_weight:.1f}x + {total_signal - base_signal:.1f} bonus)"
-                reasons.append(reason)
+                bearish_signals += 1 * stoch_weight
+                reasons.append(f"Stochastic overbought ({stoch_k:.1f}) (weight: {stoch_weight:.1f}x + 0.0 bonus)")
         
         adx_weight = self.indicator_weights.get('ADX', 2.0)
         
@@ -1086,55 +1040,14 @@ class MLTradingEngine:
         
         mfi = indicators.get('MFI')
         if mfi:
-            duration = mfi_ctx.get('duration_candles', 0)
-            slope = mfi_ctx.get('slope', 0.0)
-            divergence = mfi_ctx.get('divergence', 'none')
-            
+            # Let ML learn temporal patterns - rules only provide basic signals
             if mfi < 20:
-                base_signal = 1 * mfi_weight
-                duration_bonus = min(1.0, duration / 15) if duration > 10 else 0
-                momentum_bonus = 0.5 if slope > 0.5 else 0
-                divergence_bonus = 1.0 if divergence == 'bullish' else 0
-                
-                total_signal = base_signal + duration_bonus + momentum_bonus + divergence_bonus
-                bullish_signals += total_signal
-                
-                context_info = []
-                if duration > 10:
-                    context_info.append(f"{duration} candles")
-                if slope > 0.5:
-                    context_info.append("rising")
-                if divergence == 'bullish':
-                    context_info.append("bullish div")
-                
-                reason = f"MFI oversold ({mfi:.1f})"
-                if context_info:
-                    reason += f" [{', '.join(context_info)}]"
-                reason += f" (weight: {mfi_weight:.1f}x + {total_signal - base_signal:.1f} bonus)"
-                reasons.append(reason)
+                bullish_signals += 1 * mfi_weight
+                reasons.append(f"MFI oversold ({mfi:.1f}) (weight: {mfi_weight:.1f}x + 0.0 bonus)")
                 
             elif mfi > 80:
-                base_signal = 1 * mfi_weight
-                duration_bonus = min(1.0, duration / 15) if duration > 10 else 0
-                momentum_bonus = 0.5 if slope < -0.5 else 0
-                divergence_bonus = 1.0 if divergence == 'bearish' else 0
-                
-                total_signal = base_signal + duration_bonus + momentum_bonus + divergence_bonus
-                bearish_signals += total_signal
-                
-                context_info = []
-                if duration > 10:
-                    context_info.append(f"{duration} candles")
-                if slope < -0.5:
-                    context_info.append("falling")
-                if divergence == 'bearish':
-                    context_info.append("bearish div")
-                
-                reason = f"MFI overbought ({mfi:.1f})"
-                if context_info:
-                    reason += f" [{', '.join(context_info)}]"
-                reason += f" (weight: {mfi_weight:.1f}x + {total_signal - base_signal:.1f} bonus)"
-                reasons.append(reason)
+                bearish_signals += 1 * mfi_weight
+                reasons.append(f"MFI overbought ({mfi:.1f}) (weight: {mfi_weight:.1f}x + 0.0 bonus)")
         
         # OBV Divergence Analysis (Volume-based)
         obv_ctx = trend_context.get('OBV', {})
