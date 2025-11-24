@@ -306,8 +306,33 @@ def init_db():
         print(f"Database initialization error: {e}")
         raise
 
+# Module-level session factory - initialized once at import
+# This prevents worker threads from falling back to SQLite when DATABASE_URL is not visible
+_cached_database_url = os.getenv('DATABASE_URL')
+_cached_engine = None
+_SessionLocal = None
+
+def _get_cached_engine():
+    """Get or create the cached engine using the DATABASE_URL captured at import time."""
+    global _cached_engine
+    if _cached_engine is None:
+        # Use the URL captured at module load time, not os.getenv() which fails in worker threads
+        _cached_engine = get_engine(_cached_database_url)
+        print(f"🔌 Database engine initialized: {'PostgreSQL' if _cached_database_url else 'SQLite (fallback)'}")
+    return _cached_engine
+
+def _get_session_factory():
+    """Get or create the cached session factory."""
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(bind=_get_cached_engine())
+    return _SessionLocal
+
 def get_session():
-    database_url = os.getenv('DATABASE_URL')
-    engine = get_engine(database_url)
-    Session = sessionmaker(bind=engine)
-    return Session()
+    """Get a new database session using the cached engine.
+    
+    IMPORTANT: This uses a module-level cached engine to prevent worker thread issues
+    where os.getenv('DATABASE_URL') returns None.
+    """
+    SessionFactory = _get_session_factory()
+    return SessionFactory()
