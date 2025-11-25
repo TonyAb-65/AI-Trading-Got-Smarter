@@ -1152,7 +1152,7 @@ elif menu == "Position Tracker":
         
         if active_positions:
             position_symbols = [f"{p.symbol} ({p.trade_type} @ {format_price(p.entry_price)})" for p in active_positions]
-            selected = st.selectbox("Select Position", position_symbols)
+            selected = st.selectbox("Select Position", position_symbols, key="close_position_selector")
             
             selected_symbol = selected.split(" (")[0]
             selected_trade_type = selected.split("(")[1].split(" @ ")[0]
