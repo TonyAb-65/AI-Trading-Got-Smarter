@@ -904,6 +904,7 @@ class MLTradingEngine:
                 entry_price = None
                 stop_loss = None
                 take_profit = None
+                entry_quality = None  # No M2 assessment for HOLD signals
                 recommendation = "No clear signal. Wait for better opportunity."
                 reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
                 reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
@@ -920,7 +921,7 @@ class MLTradingEngine:
                 'take_profit': round(take_profit, 2) if take_profit else None,
                 'ml_probability': round(ml_win_probability * 100, 2),
                 'rule_probability': round(rule_normalized * 100, 2),
-                'm2_entry_quality': round(entry_quality * 100, 2) if (entry_quality is not None and 'entry_quality' in locals()) else None,
+                'm2_entry_quality': round(entry_quality * 100, 2) if entry_quality is not None else None,
                 'method': 'profile_matching',
                 'reasons': reasons
             }
