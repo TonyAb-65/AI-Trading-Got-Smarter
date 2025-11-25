@@ -473,6 +473,12 @@ if menu == "Market Analysis":
                 st.session_state['last_timeframe'] = timeframe
                 st.session_state['last_indicators'] = latest_indicators
                 
+                # Reset trade direction to match AI recommendation
+                ai_signal = prediction.get('signal', 'LONG')
+                new_direction = 'SHORT' if ai_signal == 'SHORT' else 'LONG'
+                st.session_state['manual_direction'] = new_direction
+                st.session_state['manual_direction_signal'] = new_direction
+                
                 # Pre-fill form fields with predicted values
                 if prediction.get('entry_price'):
                     st.session_state['manual_entry_price'] = float(prediction['entry_price'])
@@ -821,6 +827,11 @@ elif menu == "Trading Signals":
                 st.session_state['last_signal_symbol'] = symbol
                 st.session_state['last_signal_market_type'] = api_market_type  # Store the API-compatible market type
                 st.session_state['last_signal_indicators'] = indicators
+                
+                # Reset trade direction to match AI recommendation
+                ai_signal = prediction.get('signal', 'LONG')
+                new_direction = 'SHORT' if ai_signal == 'SHORT' else 'LONG'
+                st.session_state['manual_direction_signal'] = new_direction
                 
                 # Pre-fill form fields with predicted values
                 if prediction.get('entry_price'):
