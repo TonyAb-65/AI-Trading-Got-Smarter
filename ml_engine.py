@@ -768,14 +768,12 @@ class MLTradingEngine:
                 regime_warning = f"⚠️ {current_regime} volatility detected - consider waiting for calmer market conditions for optimal entry"
                 print(f"   {regime_warning}")
             
-            # Determine ML recommendation based on pattern matching
-            # If similar to winning LONG → go LONG
-            # If similar to winning SHORT → go SHORT  
-            # If similar to losing LONG → go SHORT (opposite)
-            # If similar to losing SHORT → go LONG (opposite)
+            # Determine ML recommendation based on WIN patterns ONLY
+            # LOSS patterns are used as FILTER only (to block, not flip)
+            # This is the CONSERVATIVE approach - no "flip to opposite" logic
             
-            long_score = sim_win_long + sim_loss_short  # Win LONG + Loss SHORT both favor LONG
-            short_score = sim_win_short + sim_loss_long  # Win SHORT + Loss LONG both favor SHORT
+            long_score = sim_win_long   # Only Win LONG favors LONG
+            short_score = sim_win_short  # Only Win SHORT favors SHORT
             
             # Ensure scores are non-negative (cosine similarity can be negative)
             # Shift both scores to positive range by adding the minimum
@@ -815,9 +813,52 @@ class MLTradingEngine:
             # Calculate margin between directions
             prob_difference = abs(long_final_prob - short_final_prob)
             
+            # ========== PATTERN MATCHING LOGIC (CONSERVATIVE APPROACH) ==========
+            # Step 1: Check if fresh analysis matches ANY WIN pattern
+            # Step 2: If matches WIN pattern → recommend that direction
+            # Step 3: If matches LOSS pattern → HOLD (block, don't flip)
+            # Step 4: If no match to any pattern → HOLD
+            
+            WIN_SIMILARITY_THRESHOLD = 0.30    # Need at least 30% similarity to a win pattern
+            LOSS_SIMILARITY_THRESHOLD = 0.40   # 40% similarity to loss pattern = block
+            
+            loss_pattern_warning = None
+            force_hold = False
+            
+            # Get the best win pattern match
+            best_win_match = max(sim_win_long, sim_win_short)
+            best_win_direction = 'LONG' if sim_win_long >= sim_win_short else 'SHORT'
+            
+            print(f"   Best WIN match: {best_win_direction} at {best_win_match*100:.1f}%")
+            
+            # CHECK 1: Does it match ANY win pattern?
+            if best_win_match < WIN_SIMILARITY_THRESHOLD:
+                force_hold = True
+                reasons.append(f"🚫 HOLD: No strong WIN pattern match (best: {best_win_direction} {best_win_match*100:.1f}% < {WIN_SIMILARITY_THRESHOLD*100:.0f}% threshold)")
+                print(f"   🚫 No WIN pattern match - forcing HOLD")
+            
+            # CHECK 2: If about to recommend LONG, check LOSS LONG pattern
+            if not force_hold and long_final_prob > short_final_prob:
+                if sim_loss_long > LOSS_SIMILARITY_THRESHOLD:
+                    loss_pattern_warning = f"⚠️ LOSS PATTERN: {sim_loss_long*100:.1f}% similar to losing LONG trades"
+                    print(f"   {loss_pattern_warning}")
+                    force_hold = True
+                    reasons.append(f"🚫 HOLD: Matches LONG LOSS pattern ({sim_loss_long*100:.1f}%) - avoiding this setup")
+            
+            # CHECK 3: If about to recommend SHORT, check LOSS SHORT pattern
+            if not force_hold and short_final_prob > long_final_prob:
+                if sim_loss_short > LOSS_SIMILARITY_THRESHOLD:
+                    loss_pattern_warning = f"⚠️ LOSS PATTERN: {sim_loss_short*100:.1f}% similar to losing SHORT trades"
+                    print(f"   {loss_pattern_warning}")
+                    force_hold = True
+                    reasons.append(f"🚫 HOLD: Matches SHORT LOSS pattern ({sim_loss_short*100:.1f}%) - avoiding this setup")
+            
+            # ========== END PATTERN MATCHING LOGIC ==========
+            
             # Choose direction with higher probability
             # Recommend if: (1) >60% absolute, OR (2) wins by >8% margin AND >52%
-            if long_final_prob > short_final_prob and (long_final_prob > 0.6 or (prob_difference > 0.08 and long_final_prob > 0.52)):
+            # BUT respect force_hold if loss pattern detected
+            if not force_hold and long_final_prob > short_final_prob and (long_final_prob > 0.6 or (prob_difference > 0.08 and long_final_prob > 0.52)):
                 signal = 'LONG'
                 entry_price = current_price
                 stop_loss = current_price - (2 * min_distance)
@@ -858,7 +899,7 @@ class MLTradingEngine:
                     # M2 not available - proceed without advisory
                     reasons.append("ℹ️ M2 quality filter not yet available (need 10+ trades to train)")
                 
-            elif short_final_prob > long_final_prob and (short_final_prob > 0.6 or (prob_difference > 0.08 and short_final_prob > 0.52)):
+            elif not force_hold and short_final_prob > long_final_prob and (short_final_prob > 0.6 or (prob_difference > 0.08 and short_final_prob > 0.52)):
                 signal = 'SHORT'
                 entry_price = current_price
                 stop_loss = current_price + (2 * min_distance)
@@ -905,9 +946,18 @@ class MLTradingEngine:
                 stop_loss = None
                 take_profit = None
                 entry_quality = None  # No M2 assessment for HOLD signals
-                recommendation = "No clear signal. Wait for better opportunity."
-                reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
-                reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
+                
+                # Different message if force_hold due to loss pattern
+                if force_hold:
+                    recommendation = "HOLD - Loss pattern detected. Wait for better setup."
+                    reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                    if loss_pattern_warning:
+                        reasons.append(loss_pattern_warning)
+                else:
+                    recommendation = "No clear signal. Wait for better opportunity."
+                    reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                    reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
+                
                 final_probability = max(long_final_prob, short_final_prob)
                 ml_win_probability = max(ml_long_probability, ml_short_probability)
             
