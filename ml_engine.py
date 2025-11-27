@@ -870,7 +870,7 @@ class MLTradingEngine:
                 take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'LONG', support_levels, resistance_levels)
                 
                 recommendation = f"Strong LONG signal. Enter at {entry_price:.2f}"
-                reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
                 reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
                 
                 # NEW: Add volatility regime info
@@ -911,7 +911,7 @@ class MLTradingEngine:
                 take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'SHORT', support_levels, resistance_levels)
                 
                 recommendation = f"Strong SHORT signal. Enter at {entry_price:.2f}"
-                reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
                 reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
                 
                 # NEW: Add volatility regime info
@@ -950,12 +950,12 @@ class MLTradingEngine:
                 # Different message if force_hold due to loss pattern
                 if force_hold:
                     recommendation = "HOLD - Loss pattern detected. Wait for better setup."
-                    reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                    reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
                     if loss_pattern_warning:
                         reasons.append(loss_pattern_warning)
                 else:
                     recommendation = "No clear signal. Wait for better opportunity."
-                    reasons.append(f"Pattern Match: LONG {ml_long_probability*100:.1f}%, SHORT {ml_short_probability*100:.1f}%")
+                    reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
                     reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
                 
                 final_probability = max(long_final_prob, short_final_prob)
