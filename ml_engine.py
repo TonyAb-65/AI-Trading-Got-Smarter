@@ -558,11 +558,43 @@ class MLTradingEngine:
         finally:
             session.close()
     
-    def get_m2_advisory_reason(self, indicators: dict, direction: str) -> str:
+    def get_m2_advisory_reason(self, indicators: dict, direction: str, momentum_timing: dict = None) -> str:
         """
-        Generate specific reason why M2 is warning about entry timing
+        Generate specific reason why M2 is warning about entry timing.
+        Now includes momentum timing analysis from multi-timeframe RSI and KDJ.
         """
         reasons = []
+        
+        # ========== NEW: Momentum Timing Analysis ==========
+        if momentum_timing and momentum_timing.get('momentum_direction'):
+            est_candles = momentum_timing.get('estimated_candles', 0)
+            momentum_dir = momentum_timing.get('momentum_direction')
+            
+            # Check if momentum conflicts with trade direction
+            if direction == 'SHORT' and momentum_dir in ['bullish', 'mixed']:
+                if est_candles >= 2:
+                    reasons.append(f"Bullish momentum persists ~{est_candles:.0f} candles")
+                    # Add details from multi-timeframe analysis
+                    details = momentum_timing.get('details', {})
+                    if details:
+                        rsi_6 = details.get('RSI_6', 0)
+                        stoch_j = details.get('Stoch_J', 0)
+                        if rsi_6 > 60:
+                            reasons.append(f"RSI_6={rsi_6:.0f} (momentum still up)")
+                        if stoch_j > 50 and stoch_j < 100:
+                            reasons.append(f"J={stoch_j:.0f} (not peaked yet)")
+            
+            elif direction == 'LONG' and momentum_dir in ['bearish', 'mixed']:
+                if est_candles >= 2:
+                    reasons.append(f"Bearish momentum persists ~{est_candles:.0f} candles")
+                    details = momentum_timing.get('details', {})
+                    if details:
+                        rsi_6 = details.get('RSI_6', 0)
+                        stoch_j = details.get('Stoch_J', 0)
+                        if rsi_6 < 40:
+                            reasons.append(f"RSI_6={rsi_6:.0f} (momentum still down)")
+                        if stoch_j < 50 and stoch_j > 0:
+                            reasons.append(f"J={stoch_j:.0f} (not bottomed yet)")
         
         # Check divergence status
         has_divergence = indicators.get('has_divergence', False)
@@ -575,25 +607,38 @@ class MLTradingEngine:
         
         # Check trend strength
         adx = indicators.get('ADX', 0)
-        if adx > 25:
+        if adx and adx < 20:
+            reasons.append("Weak trend (ADX < 20) - wait for confirmation")
+        elif adx and adx > 25:
             # Check trend direction
-            di_plus = indicators.get('DI+', 0)
-            di_minus = indicators.get('DI-', 0)
+            di_plus = indicators.get('DI_plus', indicators.get('DI+', 0))
+            di_minus = indicators.get('DI_minus', indicators.get('DI-', 0))
             
-            if direction == 'LONG' and di_minus > di_plus:
-                reasons.append("Trend still falling")
-            elif direction == 'SHORT' and di_plus > di_minus:
-                reasons.append("Trend still rising")
+            if di_plus and di_minus:
+                if direction == 'LONG' and di_minus > di_plus:
+                    reasons.append("Trend still falling (DI- > DI+)")
+                elif direction == 'SHORT' and di_plus > di_minus:
+                    reasons.append("Trend still rising (DI+ > DI-)")
         
-        # Check for clear reversal signal
+        # Check MACD direction
+        macd = indicators.get('MACD')
+        macd_signal = indicators.get('MACD_signal')
+        if macd is not None and macd_signal is not None:
+            if direction == 'SHORT' and macd > macd_signal:
+                reasons.append("MACD still bullish - wait for crossover")
+            elif direction == 'LONG' and macd < macd_signal:
+                reasons.append("MACD still bearish - wait for crossover")
+        
+        # Check for clear reversal signal via OBV
         obv_signal = indicators.get('obv_signal', 'neutral')
-        if direction == 'LONG' and 'falling' in obv_signal.lower():
-            reasons.append("No clear reversal signal")
-        elif direction == 'SHORT' and 'rising' in obv_signal.lower():
-            reasons.append("No clear reversal signal")
+        if isinstance(obv_signal, str):
+            if direction == 'LONG' and 'falling' in obv_signal.lower():
+                reasons.append("OBV falling - smart money still selling")
+            elif direction == 'SHORT' and 'rising' in obv_signal.lower():
+                reasons.append("OBV rising - smart money still buying")
         
         if reasons:
-            return " - ".join(reasons) + " - wait for confirmation"
+            return " - ".join(reasons)
         else:
             return "Entry timing may be suboptimal - consider waiting"
     
@@ -832,8 +877,10 @@ class MLTradingEngine:
             print(f"   Best WIN match: {best_win_direction} at {best_win_match*100:.1f}%")
             
             # CHECK 1: Does it match ANY win pattern?
+            no_win_match = False
             if best_win_match < WIN_SIMILARITY_THRESHOLD:
                 force_hold = True
+                no_win_match = True
                 reasons.append(f"🚫 HOLD: No strong WIN pattern match (best: {best_win_direction} {best_win_match*100:.1f}% < {WIN_SIMILARITY_THRESHOLD*100:.0f}% threshold)")
                 print(f"   🚫 No WIN pattern match - forcing HOLD")
             
@@ -947,13 +994,18 @@ class MLTradingEngine:
                 take_profit = None
                 entry_quality = None  # No M2 assessment for HOLD signals
                 
-                # Different message if force_hold due to loss pattern
-                if force_hold:
+                # Different message based on WHY we're holding
+                if force_hold and no_win_match:
+                    # HOLD because no WIN pattern match
+                    recommendation = "HOLD - No matching win pattern. Wait for better setup."
+                    reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
+                elif force_hold and loss_pattern_warning:
+                    # HOLD because LOSS pattern detected
                     recommendation = "HOLD - Loss pattern detected. Wait for better setup."
                     reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
-                    if loss_pattern_warning:
-                        reasons.append(loss_pattern_warning)
+                    reasons.append(loss_pattern_warning)
                 else:
+                    # HOLD because no clear winner between LONG/SHORT
                     recommendation = "No clear signal. Wait for better opportunity."
                     reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
                     reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}% - No clear winner")
