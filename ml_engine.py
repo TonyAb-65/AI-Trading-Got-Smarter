@@ -285,6 +285,78 @@ class MLTradingEngine:
         features.append(timing_speed_encoded)
         features.append(timing_success_rate)
         
+        # ========== Momentum Timing Features (NEW - helps M2 assess entry timing) ==========
+        # Multi-timeframe RSI values for momentum analysis
+        rsi_6 = indicators.get('RSI_6')
+        rsi_12 = indicators.get('RSI_12')
+        rsi_24 = indicators.get('RSI_24')
+        stoch_j = indicators.get('Stoch_J')
+        
+        features.append(float(rsi_6) if rsi_6 is not None else 50.0)
+        features.append(float(rsi_12) if rsi_12 is not None else 50.0)
+        features.append(float(rsi_24) if rsi_24 is not None else 50.0)
+        features.append(float(stoch_j) if stoch_j is not None else 50.0)
+        
+        # RSI alignment feature: RSI_6 > RSI_12 > RSI_24 = bullish accelerating
+        rsi_6_val = rsi_6 if rsi_6 is not None else 50.0
+        rsi_12_val = rsi_12 if rsi_12 is not None else 50.0
+        rsi_24_val = rsi_24 if rsi_24 is not None else 50.0
+        
+        if rsi_6_val > rsi_12_val > rsi_24_val:
+            rsi_alignment_encoded = 1.0  # Bullish accelerating
+        elif rsi_6_val < rsi_12_val < rsi_24_val:
+            rsi_alignment_encoded = -1.0  # Bearish accelerating
+        elif rsi_6_val < rsi_12_val and rsi_6_val > 50:
+            rsi_alignment_encoded = 0.5  # Bullish weakening
+        elif rsi_6_val > rsi_12_val and rsi_6_val < 50:
+            rsi_alignment_encoded = -0.5  # Bearish weakening
+        else:
+            rsi_alignment_encoded = 0.0  # Neutral
+        
+        features.append(rsi_alignment_encoded)
+        
+        # KDJ dynamics feature: J > K > D = bullish momentum
+        stoch_k = indicators.get('Stoch_K', 50.0)
+        stoch_d = indicators.get('Stoch_D', 50.0)
+        stoch_j_val = stoch_j if stoch_j is not None else 50.0
+        
+        if stoch_j_val > 100:
+            kdj_dynamics_encoded = -0.8  # J peaked - reversal down likely
+        elif stoch_j_val < 0:
+            kdj_dynamics_encoded = 0.8  # J bottomed - reversal up likely
+        elif stoch_j_val > stoch_k > stoch_d:
+            kdj_dynamics_encoded = 1.0  # Bullish aligned
+        elif stoch_j_val < stoch_k < stoch_d:
+            kdj_dynamics_encoded = -1.0  # Bearish aligned
+        else:
+            kdj_dynamics_encoded = 0.0  # Neutral
+        
+        features.append(kdj_dynamics_encoded)
+        
+        # Momentum timing from pre-calculated analysis (if available)
+        momentum_timing = indicators.get('momentum_timing', {})
+        
+        # Momentum direction: bullish=1, bearish=-1, reversal_imminent=0.5/-0.5, mixed=0
+        momentum_dir = momentum_timing.get('momentum_direction', 'neutral')
+        if momentum_dir == 'bullish':
+            momentum_dir_encoded = 1.0
+        elif momentum_dir == 'bearish':
+            momentum_dir_encoded = -1.0
+        elif momentum_dir == 'reversal_imminent':
+            momentum_dir_encoded = 0.0  # Reversal = good entry point
+        else:
+            momentum_dir_encoded = 0.0
+        
+        features.append(momentum_dir_encoded)
+        
+        # Estimated candles before reversal (normalized: divide by 10 to keep scale reasonable)
+        est_candles = momentum_timing.get('estimated_candles', 0)
+        features.append(float(est_candles) / 10.0)
+        
+        # Timing confidence (0-1 scale)
+        timing_confidence = momentum_timing.get('timing_confidence', 0.5)
+        features.append(float(timing_confidence))
+        
         self.feature_columns = ['trade_type'] + feature_names + [
             'price_vs_sma20', 'price_vs_sma50', 'macd_divergence', 'volume_ratio',
             'rsi_duration', 'rsi_slope', 'rsi_divergence',
@@ -295,7 +367,10 @@ class MLTradingEngine:
             'at_support_zone', 'at_resistance_zone',
             'support_strength', 'resistance_strength',
             'div_has_active', 'div_candles_elapsed', 'div_avg_resolution',
-            'div_speed_class', 'div_success_rate'
+            'div_speed_class', 'div_success_rate',
+            'mt_rsi_6', 'mt_rsi_12', 'mt_rsi_24', 'mt_stoch_j',
+            'mt_rsi_alignment', 'mt_kdj_dynamics', 'mt_momentum_dir',
+            'mt_est_candles', 'mt_timing_confidence'
         ]
         
         return np.array(features).reshape(1, -1)
@@ -562,39 +637,59 @@ class MLTradingEngine:
         """
         Generate specific reason why M2 is warning about entry timing.
         Now includes momentum timing analysis from multi-timeframe RSI and KDJ.
+        Uses timeframe-aware timing (candles + actual hours).
         """
         reasons = []
         
-        # ========== NEW: Momentum Timing Analysis ==========
+        # ========== Momentum Timing Analysis (Primary Factor for Entry Timing) ==========
         if momentum_timing and momentum_timing.get('momentum_direction'):
             est_candles = momentum_timing.get('estimated_candles', 0)
+            est_hours = momentum_timing.get('estimated_hours', 0)
+            tf_label = momentum_timing.get('timeframe_label', '1H')
             momentum_dir = momentum_timing.get('momentum_direction')
+            
+            # Format time display
+            if est_hours >= 24:
+                time_display = f"~{est_hours/24:.1f} days"
+            elif est_hours >= 1:
+                time_display = f"~{est_hours:.0f}h"
+            else:
+                time_display = f"~{est_hours*60:.0f}m"
             
             # Check if momentum conflicts with trade direction
             if direction == 'SHORT' and momentum_dir in ['bullish', 'mixed']:
                 if est_candles >= 2:
-                    reasons.append(f"Bullish momentum persists ~{est_candles:.0f} candles")
-                    # Add details from multi-timeframe analysis
+                    reasons.append(f"HOLD: Bullish momentum persists ~{est_candles:.0f} {tf_label} candles ({time_display})")
                     details = momentum_timing.get('details', {})
                     if details:
                         rsi_6 = details.get('RSI_6', 0)
                         stoch_j = details.get('Stoch_J', 0)
                         if rsi_6 > 60:
-                            reasons.append(f"RSI_6={rsi_6:.0f} (momentum still up)")
+                            reasons.append(f"RSI_6={rsi_6:.0f} still rising")
                         if stoch_j > 50 and stoch_j < 100:
-                            reasons.append(f"J={stoch_j:.0f} (not peaked yet)")
+                            reasons.append(f"J={stoch_j:.0f} not peaked")
             
             elif direction == 'LONG' and momentum_dir in ['bearish', 'mixed']:
                 if est_candles >= 2:
-                    reasons.append(f"Bearish momentum persists ~{est_candles:.0f} candles")
+                    reasons.append(f"HOLD: Bearish momentum persists ~{est_candles:.0f} {tf_label} candles ({time_display})")
                     details = momentum_timing.get('details', {})
                     if details:
                         rsi_6 = details.get('RSI_6', 0)
                         stoch_j = details.get('Stoch_J', 0)
                         if rsi_6 < 40:
-                            reasons.append(f"RSI_6={rsi_6:.0f} (momentum still down)")
+                            reasons.append(f"RSI_6={rsi_6:.0f} still falling")
                         if stoch_j < 50 and stoch_j > 0:
-                            reasons.append(f"J={stoch_j:.0f} (not bottomed yet)")
+                            reasons.append(f"J={stoch_j:.0f} not bottomed")
+            
+            # Good entry timing - reversal imminent
+            elif momentum_dir == 'reversal_imminent':
+                reasons.append(f"ENTER: Reversal imminent within 1-2 {tf_label} candles")
+            
+            # Momentum aligns with direction - good entry
+            elif (direction == 'LONG' and momentum_dir == 'bullish') or \
+                 (direction == 'SHORT' and momentum_dir == 'bearish'):
+                # Momentum supports the trade direction - this is good
+                pass  # Don't add warning, let other factors speak
         
         # Check divergence status
         has_divergence = indicators.get('has_divergence', False)
@@ -937,8 +1032,9 @@ class MLTradingEngine:
                     # M2 provides advisory warnings but does NOT block the signal
                     if entry_quality < 0.5:
                         reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
-                        # Generate specific advisory reason based on market conditions
-                        advisory_reason = self.get_m2_advisory_reason(indicators, 'LONG')
+                        # Generate specific advisory reason based on market conditions and momentum timing
+                        momentum_timing = indicators.get('momentum_timing', {})
+                        advisory_reason = self.get_m2_advisory_reason(indicators, 'LONG', momentum_timing)
                         reasons.append(f"⚠️ M2 Advisory: {advisory_reason}")
                     else:
                         reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
@@ -978,8 +1074,9 @@ class MLTradingEngine:
                     # M2 provides advisory warnings but does NOT block the signal
                     if entry_quality < 0.5:
                         reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
-                        # Generate specific advisory reason based on market conditions
-                        advisory_reason = self.get_m2_advisory_reason(indicators, 'SHORT')
+                        # Generate specific advisory reason based on market conditions and momentum timing
+                        momentum_timing = indicators.get('momentum_timing', {})
+                        advisory_reason = self.get_m2_advisory_reason(indicators, 'SHORT', momentum_timing)
                         reasons.append(f"⚠️ M2 Advisory: {advisory_reason}")
                     else:
                         reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
@@ -1779,75 +1876,6 @@ class MLTradingEngine:
                 print(f"📂 Loaded learned indicator weights from previous sessions")
         except Exception as e:
             pass
-    
-    def get_m2_advisory_reason(self, indicators, direction):
-        """
-        Generate specific, actionable M2 advisory message based on market conditions.
-        
-        Args:
-            indicators: Current market indicators
-            direction: 'LONG' or 'SHORT'
-        
-        Returns:
-            Specific advisory message explaining why entry timing may be suboptimal
-        """
-        reasons = []
-        
-        # Check divergence timing
-        has_div = indicators.get('has_divergence', 0) == 1
-        candles_elapsed = indicators.get('candles_elapsed', 0)
-        
-        if not has_div:
-            reasons.append("No divergence detected")
-        elif candles_elapsed > 10:
-            reasons.append(f"Divergence {int(candles_elapsed)} candles old - may be too late")
-        
-        # Check trend strength
-        adx = indicators.get('ADX', 0)
-        plus_di = indicators.get('+DI', 0)
-        minus_di = indicators.get('-DI', 0)
-        
-        if direction == 'LONG':
-            if minus_di > plus_di and adx > 25:
-                reasons.append("Trend still falling - No clear reversal signal")
-            elif adx < 20:
-                reasons.append("Weak trend (ADX < 20) - wait for confirmation")
-        else:  # SHORT
-            if plus_di > minus_di and adx > 25:
-                reasons.append("Trend still rising - No clear reversal signal")
-            elif adx < 20:
-                reasons.append("Weak trend (ADX < 20) - wait for confirmation")
-        
-        # Check momentum indicators
-        rsi = indicators.get('RSI', 50)
-        macd = indicators.get('MACD', 0)
-        macd_signal = indicators.get('MACD_Signal', 0)
-        
-        if direction == 'LONG':
-            if rsi > 70:
-                reasons.append("RSI overbought - risk of pullback")
-            elif macd < macd_signal:
-                reasons.append("MACD still bearish - wait for crossover")
-        else:  # SHORT
-            if rsi < 30:
-                reasons.append("RSI oversold - risk of bounce")
-            elif macd > macd_signal:
-                reasons.append("MACD still bullish - wait for crossover")
-        
-        # Check volume confirmation
-        mfi = indicators.get('MFI', 50)
-        obv_slope = indicators.get('last_obv_slope', 0)
-        
-        if direction == 'LONG' and obv_slope < 0:
-            reasons.append("Volume declining - weak buying pressure")
-        elif direction == 'SHORT' and obv_slope > 0:
-            reasons.append("Volume increasing - weak selling pressure")
-        
-        # Build final message
-        if reasons:
-            return " - ".join(reasons)
-        else:
-            return "Entry timing may be suboptimal - consider waiting for stronger confirmation"
     
     def _load_m2_model(self):
         """
