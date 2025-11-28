@@ -208,10 +208,13 @@ class TechnicalIndicators:
         
         return signals
     
-    def get_momentum_timing(self):
+    def get_momentum_timing(self, timeframe_minutes=60):
         """
         Analyze multi-timeframe RSI and KDJ to estimate momentum persistence.
         Returns timing analysis showing how long current momentum is likely to continue.
+        
+        Args:
+            timeframe_minutes: The selected chart timeframe in minutes (60=1H, 240=4H, etc.)
         
         Uses:
         - RSI_6, RSI_12, RSI_24: Multi-timeframe momentum alignment
@@ -220,12 +223,18 @@ class TechnicalIndicators:
         Returns dict with:
         - momentum_direction: 'bullish', 'bearish', or 'neutral'
         - estimated_candles: estimated candles before reversal likely
+        - estimated_hours: estimated hours before reversal (timeframe-aware)
+        - timeframe_label: human-readable timeframe (e.g., "1H", "4H")
         - rsi_alignment: how RSI timeframes are aligned
         - kdj_dynamics: J/K/D relationship analysis
         - timing_confidence: confidence in timing estimate
         - advisory: human-readable timing advisory
         """
         indicators = self.get_latest_indicators()
+        
+        # Convert timeframe to label for display
+        timeframe_labels = {5: '5m', 15: '15m', 30: '30m', 60: '1H', 240: '4H', 1440: '1D'}
+        timeframe_label = timeframe_labels.get(timeframe_minutes, f'{timeframe_minutes}m')
         
         # Get multi-timeframe RSI values
         rsi_6 = indicators.get('RSI_6')
@@ -242,6 +251,9 @@ class TechnicalIndicators:
         result = {
             'momentum_direction': 'neutral',
             'estimated_candles': 0,
+            'estimated_hours': 0,
+            'timeframe_minutes': timeframe_minutes,
+            'timeframe_label': timeframe_label,
             'rsi_alignment': 'neutral',
             'kdj_dynamics': 'neutral',
             'timing_confidence': 0.0,
@@ -364,19 +376,33 @@ class TechnicalIndicators:
         
         result['estimated_candles'] = round(max(1, estimated_candles), 1)
         
+        # ========== Calculate Actual Time from Candles ==========
+        estimated_hours = (result['estimated_candles'] * timeframe_minutes) / 60
+        result['estimated_hours'] = round(estimated_hours, 1)
+        
+        # Format time for display (hours or days)
+        if estimated_hours >= 24:
+            time_display = f"~{estimated_hours/24:.1f} days"
+        elif estimated_hours >= 1:
+            time_display = f"~{estimated_hours:.0f} hours"
+        else:
+            time_display = f"~{estimated_hours*60:.0f} mins"
+        
+        candle_display = f"{result['estimated_candles']:.0f} {timeframe_label} candles"
+        
         # ========== Generate Advisory ==========
         if result['momentum_direction'] == 'bullish':
             if estimated_candles >= 3:
-                result['advisory'] = f"Bullish momentum likely persists {result['estimated_candles']:.0f}+ candles (RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']})"
+                result['advisory'] = f"Bullish momentum likely persists {candle_display} ({time_display}) - RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']}"
             else:
-                result['advisory'] = f"Bullish momentum weakening, ~{result['estimated_candles']:.0f} candles before potential reversal"
+                result['advisory'] = f"Bullish momentum weakening, ~{candle_display} ({time_display}) before potential reversal"
         elif result['momentum_direction'] == 'bearish':
             if estimated_candles >= 3:
-                result['advisory'] = f"Bearish momentum likely persists {result['estimated_candles']:.0f}+ candles (RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']})"
+                result['advisory'] = f"Bearish momentum likely persists {candle_display} ({time_display}) - RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']}"
             else:
-                result['advisory'] = f"Bearish momentum weakening, ~{result['estimated_candles']:.0f} candles before potential reversal"
+                result['advisory'] = f"Bearish momentum weakening, ~{candle_display} ({time_display}) before potential reversal"
         elif result['momentum_direction'] == 'reversal_imminent':
-            result['advisory'] = f"Reversal signals detected! J-line {'peaked' if kdj_j_peaked else 'bottomed'} - expect direction change within 1-2 candles"
+            result['advisory'] = f"Reversal signals detected! J-line {'peaked' if kdj_j_peaked else 'bottomed'} - expect direction change within 1-2 {timeframe_label} candles ({time_display})"
         else:
             result['advisory'] = f"Mixed signals - momentum unclear, wait for alignment (RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']})"
         
