@@ -414,7 +414,10 @@ if menu == "Market Analysis":
                 signals = tech.get_trend_signals()
                 
                 # NEW: Get momentum timing analysis from multi-timeframe RSI and KDJ
-                momentum_timing = tech.get_momentum_timing()
+                # Convert timeframe string to minutes for timing calculations
+                timeframe_to_minutes = {'5m': 5, '15m': 15, '30m': 30, '1H': 60, '4H': 240, '1D': 1440}
+                timeframe_minutes = timeframe_to_minutes.get(timeframe, 60)
+                momentum_timing = tech.get_momentum_timing(timeframe_minutes=timeframe_minutes)
                 latest_indicators['momentum_timing'] = momentum_timing
                 
                 # Get historical trend context for duration/slope/divergence analysis
@@ -670,15 +673,25 @@ if menu == "Market Analysis":
             details = momentum_timing.get('details', {})
             momentum_dir = momentum_timing.get('momentum_direction', 'neutral')
             est_candles = momentum_timing.get('estimated_candles', 0)
+            est_hours = momentum_timing.get('estimated_hours', 0)
+            tf_label = momentum_timing.get('timeframe_label', '1H')
             confidence = momentum_timing.get('timing_confidence', 0)
             
-            # Display momentum direction with color
+            # Format time display
+            if est_hours >= 24:
+                time_display = f"~{est_hours/24:.1f} days"
+            elif est_hours >= 1:
+                time_display = f"~{est_hours:.0f} hours"
+            else:
+                time_display = f"~{est_hours*60:.0f} mins"
+            
+            # Display momentum direction with color and actual time
             if momentum_dir == 'bullish':
-                st.success(f"📈 **Bullish Momentum** - Likely persists ~{est_candles:.0f} candles")
+                st.success(f"📈 **Bullish Momentum** - Likely persists ~{est_candles:.0f} {tf_label} candles ({time_display})")
             elif momentum_dir == 'bearish':
-                st.error(f"📉 **Bearish Momentum** - Likely persists ~{est_candles:.0f} candles")
+                st.error(f"📉 **Bearish Momentum** - Likely persists ~{est_candles:.0f} {tf_label} candles ({time_display})")
             elif momentum_dir == 'reversal_imminent':
-                st.warning(f"🔄 **Reversal Imminent** - Direction change expected within 1-2 candles")
+                st.warning(f"🔄 **Reversal Imminent** - Direction change expected within 1-2 {tf_label} candles ({time_display})")
             else:
                 st.info(f"↔️ **Mixed/Neutral** - Wait for clearer signal")
             
