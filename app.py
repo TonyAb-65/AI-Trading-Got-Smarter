@@ -413,6 +413,10 @@ if menu == "Market Analysis":
                 latest_indicators = tech.get_latest_indicators()
                 signals = tech.get_trend_signals()
                 
+                # NEW: Get momentum timing analysis from multi-timeframe RSI and KDJ
+                momentum_timing = tech.get_momentum_timing()
+                latest_indicators['momentum_timing'] = momentum_timing
+                
                 # Get historical trend context for duration/slope/divergence analysis
                 trend_context = tech.get_trend_context(symbol, api_market_type)
                 latest_indicators['trend_context'] = trend_context
@@ -464,7 +468,8 @@ if menu == "Market Analysis":
                     'prediction': prediction,
                     'patterns': patterns,
                     'whale_data': whale_data,
-                    'trend_context': trend_context
+                    'trend_context': trend_context,
+                    'momentum_timing': momentum_timing  # NEW: Multi-timeframe timing analysis
                 }
                 st.session_state['analysis_params'] = current_params
                 st.session_state['last_prediction'] = prediction
@@ -655,6 +660,69 @@ if menu == "Market Analysis":
             
             if volume_profile:
                 st.write(f"**Volume Profile:** Current: {volume_profile['current_volume']:,.0f} | Avg: {volume_profile['average_volume']:,.0f} | {volume_profile['volume_vs_avg']:.0f}% of average")
+        
+        # NEW: Momentum Timing Analysis Section
+        momentum_timing = data.get('momentum_timing', {})
+        if momentum_timing and momentum_timing.get('advisory'):
+            st.divider()
+            st.subheader("⏱️ Momentum Timing Analysis")
+            
+            details = momentum_timing.get('details', {})
+            momentum_dir = momentum_timing.get('momentum_direction', 'neutral')
+            est_candles = momentum_timing.get('estimated_candles', 0)
+            confidence = momentum_timing.get('timing_confidence', 0)
+            
+            # Display momentum direction with color
+            if momentum_dir == 'bullish':
+                st.success(f"📈 **Bullish Momentum** - Likely persists ~{est_candles:.0f} candles")
+            elif momentum_dir == 'bearish':
+                st.error(f"📉 **Bearish Momentum** - Likely persists ~{est_candles:.0f} candles")
+            elif momentum_dir == 'reversal_imminent':
+                st.warning(f"🔄 **Reversal Imminent** - Direction change expected within 1-2 candles")
+            else:
+                st.info(f"↔️ **Mixed/Neutral** - Wait for clearer signal")
+            
+            # Display multi-timeframe details in columns
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Multi-Timeframe RSI:**")
+                rsi_6 = details.get('RSI_6', 0)
+                rsi_12 = details.get('RSI_12', 0)
+                rsi_24 = details.get('RSI_24', 0)
+                
+                # Color based on values
+                rsi6_color = "🟢" if rsi_6 > 60 else "🔴" if rsi_6 < 40 else "🟡"
+                rsi12_color = "🟢" if rsi_12 > 60 else "🔴" if rsi_12 < 40 else "🟡"
+                rsi24_color = "🟢" if rsi_24 > 60 else "🔴" if rsi_24 < 40 else "🟡"
+                
+                st.write(f"{rsi6_color} RSI₆: {rsi_6:.1f} (fast)")
+                st.write(f"{rsi12_color} RSI₁₂: {rsi_12:.1f} (medium)")
+                st.write(f"{rsi24_color} RSI₂₄: {rsi_24:.1f} (slow)")
+                
+                rsi_alignment = momentum_timing.get('rsi_alignment', 'neutral')
+                st.caption(f"Alignment: {rsi_alignment.replace('_', ' ')}")
+            
+            with col2:
+                st.write("**KDJ Dynamics:**")
+                stoch_j = details.get('Stoch_J', 0)
+                stoch_k = details.get('Stoch_K', 0)
+                stoch_d = details.get('Stoch_D', 0)
+                
+                # J line extremes
+                j_color = "🔴" if stoch_j > 100 else "🟢" if stoch_j < 0 else "🟡"
+                k_color = "🔴" if stoch_k > 80 else "🟢" if stoch_k < 20 else "🟡"
+                d_color = "🔴" if stoch_d > 80 else "🟢" if stoch_d < 20 else "🟡"
+                
+                st.write(f"{j_color} J: {stoch_j:.1f} (leading)")
+                st.write(f"{k_color} K: {stoch_k:.1f} (medium)")
+                st.write(f"{d_color} D: {stoch_d:.1f} (lagging)")
+                
+                kdj_dynamics = momentum_timing.get('kdj_dynamics', 'neutral')
+                st.caption(f"Dynamics: {kdj_dynamics.replace('_', ' ')}")
+            
+            # Advisory message
+            st.info(f"💡 **Timing Advisory:** {momentum_timing.get('advisory', 'No timing data')}")
         
         st.divider()
         st.subheader("🤖 AI Trading Recommendation")
