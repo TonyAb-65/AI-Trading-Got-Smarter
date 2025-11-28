@@ -12,6 +12,11 @@ class TechnicalIndicators:
         
         df['RSI'] = ta.rsi(df['close'], length=14)
         
+        # ========== NEW: Multi-Timeframe RSI for Momentum Timing ==========
+        df['RSI_6'] = ta.rsi(df['close'], length=6)    # Fast RSI (short-term momentum)
+        df['RSI_12'] = ta.rsi(df['close'], length=12)  # Medium RSI
+        df['RSI_24'] = ta.rsi(df['close'], length=24)  # Slow RSI (longer-term momentum)
+        
         macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
         if macd is not None:
             df['MACD'] = macd['MACD_12_26_9']
@@ -22,6 +27,9 @@ class TechnicalIndicators:
         if stoch is not None:
             df['Stoch_K'] = stoch['STOCHk_14_3_3']
             df['Stoch_D'] = stoch['STOCHd_14_3_3']
+            # ========== NEW: KDJ J Line for Momentum Timing ==========
+            # J = 3*K - 2*D (leads K and D, more sensitive to reversals)
+            df['Stoch_J'] = 3 * df['Stoch_K'] - 2 * df['Stoch_D']
         
         df['OBV'] = ta.obv(df['close'], df['volume'])
         
@@ -97,11 +105,17 @@ class TechnicalIndicators:
         latest = self.df.iloc[-1]
         indicators = {
             'RSI': latest.get('RSI'),
+            # NEW: Multi-timeframe RSI for momentum timing
+            'RSI_6': latest.get('RSI_6'),
+            'RSI_12': latest.get('RSI_12'),
+            'RSI_24': latest.get('RSI_24'),
             'MACD': latest.get('MACD'),
             'MACD_signal': latest.get('MACD_signal'),
             'MACD_hist': latest.get('MACD_hist'),
             'Stoch_K': latest.get('Stoch_K'),
             'Stoch_D': latest.get('Stoch_D'),
+            # NEW: KDJ J line for momentum timing
+            'Stoch_J': latest.get('Stoch_J'),
             'OBV': latest.get('OBV'),
             'MFI': latest.get('MFI'),
             'CCI': latest.get('CCI'),
@@ -193,6 +207,180 @@ class TechnicalIndicators:
                 signals['Moving_Averages'] = 'bullish' if bullish_count > len(ma_signals) / 2 else 'bearish'
         
         return signals
+    
+    def get_momentum_timing(self):
+        """
+        Analyze multi-timeframe RSI and KDJ to estimate momentum persistence.
+        Returns timing analysis showing how long current momentum is likely to continue.
+        
+        Uses:
+        - RSI_6, RSI_12, RSI_24: Multi-timeframe momentum alignment
+        - Stoch_K, Stoch_D, Stoch_J: KDJ momentum dynamics
+        
+        Returns dict with:
+        - momentum_direction: 'bullish', 'bearish', or 'neutral'
+        - estimated_candles: estimated candles before reversal likely
+        - rsi_alignment: how RSI timeframes are aligned
+        - kdj_dynamics: J/K/D relationship analysis
+        - timing_confidence: confidence in timing estimate
+        - advisory: human-readable timing advisory
+        """
+        indicators = self.get_latest_indicators()
+        
+        # Get multi-timeframe RSI values
+        rsi_6 = indicators.get('RSI_6')
+        rsi_12 = indicators.get('RSI_12')
+        rsi_24 = indicators.get('RSI_24')
+        rsi_14 = indicators.get('RSI')
+        
+        # Get KDJ values
+        stoch_k = indicators.get('Stoch_K')
+        stoch_d = indicators.get('Stoch_D')
+        stoch_j = indicators.get('Stoch_J')
+        
+        # Initialize result
+        result = {
+            'momentum_direction': 'neutral',
+            'estimated_candles': 0,
+            'rsi_alignment': 'neutral',
+            'kdj_dynamics': 'neutral',
+            'timing_confidence': 0.0,
+            'advisory': '',
+            'details': {}
+        }
+        
+        # Check if we have all required data
+        if None in [rsi_6, rsi_12, rsi_24, stoch_k, stoch_d, stoch_j]:
+            result['advisory'] = 'Insufficient data for timing analysis'
+            return result
+        
+        # Store raw values for display
+        result['details'] = {
+            'RSI_6': round(rsi_6, 2),
+            'RSI_12': round(rsi_12, 2),
+            'RSI_24': round(rsi_24, 2),
+            'Stoch_K': round(stoch_k, 2),
+            'Stoch_D': round(stoch_d, 2),
+            'Stoch_J': round(stoch_j, 2)
+        }
+        
+        # ========== RSI Multi-Timeframe Analysis ==========
+        # When RSI_6 > RSI_12 > RSI_24: Momentum BUILDING (bullish accelerating)
+        # When RSI_6 < RSI_12 < RSI_24: Momentum FADING (bearish accelerating)
+        # When aligned but RSI_6 < RSI_12: Momentum starting to weaken
+        
+        rsi_bullish_building = rsi_6 > rsi_12 > rsi_24
+        rsi_bearish_building = rsi_6 < rsi_12 < rsi_24
+        rsi_bullish_fading = rsi_6 < rsi_12 and rsi_12 >= rsi_24 and rsi_6 > 50
+        rsi_bearish_fading = rsi_6 > rsi_12 and rsi_12 <= rsi_24 and rsi_6 < 50
+        
+        # Determine RSI alignment
+        if rsi_bullish_building:
+            result['rsi_alignment'] = 'bullish_accelerating'
+            rsi_momentum = 'bullish'
+            rsi_candles = 4 + (rsi_6 - rsi_24) / 10  # More spread = more momentum
+        elif rsi_bearish_building:
+            result['rsi_alignment'] = 'bearish_accelerating'
+            rsi_momentum = 'bearish'
+            rsi_candles = 4 + (rsi_24 - rsi_6) / 10
+        elif rsi_bullish_fading:
+            result['rsi_alignment'] = 'bullish_weakening'
+            rsi_momentum = 'bullish_weak'
+            rsi_candles = 2  # Reversal likely soon
+        elif rsi_bearish_fading:
+            result['rsi_alignment'] = 'bearish_weakening'
+            rsi_momentum = 'bearish_weak'
+            rsi_candles = 2
+        else:
+            result['rsi_alignment'] = 'neutral'
+            rsi_momentum = 'neutral'
+            rsi_candles = 1
+        
+        # Overbought/Oversold extremes reduce timing
+        if rsi_6 > 80:
+            rsi_candles = max(1, rsi_candles - 2)  # Near extreme, reversal soon
+        elif rsi_6 < 20:
+            rsi_candles = max(1, rsi_candles - 2)
+        
+        # ========== KDJ Dynamics Analysis ==========
+        # J is the leading indicator (most sensitive)
+        # K is medium speed
+        # D is the slowest (lagging)
+        #
+        # J > K > D: Bullish momentum building
+        # J < K < D: Bearish momentum building
+        # J peaked (>100 or starting to fall while K/D still rising): Reversal starting
+        # J bottomed (<0 or starting to rise while K/D still falling): Reversal starting
+        
+        kdj_bullish = stoch_j > stoch_k > stoch_d
+        kdj_bearish = stoch_j < stoch_k < stoch_d
+        kdj_j_peaked = stoch_j > 100 or (stoch_j < stoch_k and stoch_k > stoch_d)
+        kdj_j_bottomed = stoch_j < 0 or (stoch_j > stoch_k and stoch_k < stoch_d)
+        
+        if kdj_bullish and not kdj_j_peaked:
+            result['kdj_dynamics'] = 'bullish_aligned'
+            kdj_momentum = 'bullish'
+            kdj_candles = 3 + (stoch_j - stoch_d) / 20
+        elif kdj_bearish and not kdj_j_bottomed:
+            result['kdj_dynamics'] = 'bearish_aligned'
+            kdj_momentum = 'bearish'
+            kdj_candles = 3 + (stoch_d - stoch_j) / 20
+        elif kdj_j_peaked:
+            result['kdj_dynamics'] = 'j_peaked_reversal_likely'
+            kdj_momentum = 'reversal_down'
+            kdj_candles = 1
+        elif kdj_j_bottomed:
+            result['kdj_dynamics'] = 'j_bottomed_reversal_likely'
+            kdj_momentum = 'reversal_up'
+            kdj_candles = 1
+        else:
+            result['kdj_dynamics'] = 'neutral'
+            kdj_momentum = 'neutral'
+            kdj_candles = 2
+        
+        # Extreme J values reduce timing
+        if stoch_j > 100:
+            kdj_candles = max(1, kdj_candles - 1)
+        elif stoch_j < 0:
+            kdj_candles = max(1, kdj_candles - 1)
+        
+        # ========== Combine RSI and KDJ for Overall Timing ==========
+        estimated_candles = (rsi_candles + kdj_candles) / 2
+        
+        # Determine overall momentum direction
+        if rsi_momentum in ['bullish', 'bullish_weak'] and kdj_momentum in ['bullish', 'reversal_up']:
+            result['momentum_direction'] = 'bullish'
+            result['timing_confidence'] = 0.8 if rsi_momentum == 'bullish' and kdj_momentum == 'bullish' else 0.5
+        elif rsi_momentum in ['bearish', 'bearish_weak'] and kdj_momentum in ['bearish', 'reversal_down']:
+            result['momentum_direction'] = 'bearish'
+            result['timing_confidence'] = 0.8 if rsi_momentum == 'bearish' and kdj_momentum == 'bearish' else 0.5
+        elif kdj_momentum in ['reversal_up', 'reversal_down']:
+            result['momentum_direction'] = 'reversal_imminent'
+            result['timing_confidence'] = 0.7
+            estimated_candles = 1
+        else:
+            result['momentum_direction'] = 'mixed'
+            result['timing_confidence'] = 0.4
+        
+        result['estimated_candles'] = round(max(1, estimated_candles), 1)
+        
+        # ========== Generate Advisory ==========
+        if result['momentum_direction'] == 'bullish':
+            if estimated_candles >= 3:
+                result['advisory'] = f"Bullish momentum likely persists {result['estimated_candles']:.0f}+ candles (RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']})"
+            else:
+                result['advisory'] = f"Bullish momentum weakening, ~{result['estimated_candles']:.0f} candles before potential reversal"
+        elif result['momentum_direction'] == 'bearish':
+            if estimated_candles >= 3:
+                result['advisory'] = f"Bearish momentum likely persists {result['estimated_candles']:.0f}+ candles (RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']})"
+            else:
+                result['advisory'] = f"Bearish momentum weakening, ~{result['estimated_candles']:.0f} candles before potential reversal"
+        elif result['momentum_direction'] == 'reversal_imminent':
+            result['advisory'] = f"Reversal signals detected! J-line {'peaked' if kdj_j_peaked else 'bottomed'} - expect direction change within 1-2 candles"
+        else:
+            result['advisory'] = f"Mixed signals - momentum unclear, wait for alignment (RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']})"
+        
+        return result
     
     def detect_candlestick_patterns(self):
         """Detect common candlestick patterns in the most recent candles"""
