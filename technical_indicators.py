@@ -6,6 +6,65 @@ class TechnicalIndicators:
     def __init__(self, df):
         self.df = df.copy()
         self.df = self.df.sort_values('timestamp').reset_index(drop=True)
+        self.data_quality_issues = []
+        self._validate_data()
+        
+    def _validate_data(self):
+        """
+        Validate OHLCV data quality before indicator calculations.
+        Checks for: duplicates, missing volume, outliers, minimum data.
+        Does NOT modify data - only logs issues for transparency.
+        """
+        self.data_quality_issues = []
+        df = self.df
+        
+        # 1. Check for duplicate timestamps
+        if 'timestamp' in df.columns:
+            duplicates = df['timestamp'].duplicated().sum()
+            if duplicates > 0:
+                self.data_quality_issues.append(f"⚠️ {duplicates} duplicate timestamps found")
+                # Remove duplicates, keep last (most recent data)
+                self.df = df.drop_duplicates(subset=['timestamp'], keep='last').reset_index(drop=True)
+                df = self.df
+        
+        # 2. Check for missing/zero volume
+        if 'volume' in df.columns:
+            zero_volume = (df['volume'] == 0).sum() + df['volume'].isna().sum()
+            if zero_volume > len(df) * 0.1:  # More than 10% missing volume
+                self.data_quality_issues.append(f"⚠️ {zero_volume}/{len(df)} candles have zero/missing volume")
+        
+        # 3. Check for price outliers (>50% single-candle moves)
+        if 'close' in df.columns and len(df) > 1:
+            pct_changes = df['close'].pct_change().abs()
+            extreme_moves = (pct_changes > 0.5).sum()  # 50% moves
+            if extreme_moves > 0:
+                self.data_quality_issues.append(f"⚠️ {extreme_moves} extreme price moves (>50%) detected")
+        
+        # 4. Check OHLC consistency (high >= low, high >= open/close, low <= open/close)
+        if all(col in df.columns for col in ['open', 'high', 'low', 'close']):
+            invalid_ohlc = (
+                (df['high'] < df['low']) | 
+                (df['high'] < df['open']) | 
+                (df['high'] < df['close']) |
+                (df['low'] > df['open']) | 
+                (df['low'] > df['close'])
+            ).sum()
+            if invalid_ohlc > 0:
+                self.data_quality_issues.append(f"⚠️ {invalid_ohlc} candles have invalid OHLC (high<low or similar)")
+        
+        # 5. Minimum data check
+        if len(df) < 50:
+            self.data_quality_issues.append(f"⚠️ Only {len(df)} candles - some indicators may be unreliable (need 50+)")
+        
+        # Log issues if any found
+        if self.data_quality_issues:
+            print(f"📊 Data Quality Check: {len(self.data_quality_issues)} issue(s) detected")
+            for issue in self.data_quality_issues:
+                print(f"   {issue}")
+        
+    def get_data_quality_summary(self):
+        """Return data quality issues for display in UI if needed."""
+        return self.data_quality_issues
         
     def calculate_all_indicators(self):
         df = self.df.copy()
