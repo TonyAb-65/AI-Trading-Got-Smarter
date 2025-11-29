@@ -593,8 +593,17 @@ class MLTradingEngine:
             X_train = np.array(X_train)
             y_train = np.array(y_train)
             
+            # Calculate class weights to handle imbalanced WIN/LOSS trades
+            win_count = sum(y_train)
+            loss_count = len(y_train) - win_count
+            
+            # scale_pos_weight = negative_samples / positive_samples
+            # This balances the model when WIN/LOSS trades are imbalanced
+            scale_pos_weight = loss_count / win_count if win_count > 0 else 1.0
+            
             # Train XGBoost classifier for entry quality
             print(f"🔧 Training M2 meta-model on {len(X_train)} trades...")
+            print(f"   Class balance: {win_count} wins, {loss_count} losses (scale_pos_weight={scale_pos_weight:.2f})")
             
             self.m2_model = xgb.XGBClassifier(
                 n_estimators=100,
@@ -603,7 +612,8 @@ class MLTradingEngine:
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=42,
-                eval_metric='logloss'
+                eval_metric='logloss',
+                scale_pos_weight=scale_pos_weight
             )
             
             self.m2_model.fit(X_train, y_train)
@@ -611,9 +621,6 @@ class MLTradingEngine:
             # Calculate accuracy
             y_pred = self.m2_model.predict(X_train)
             accuracy = accuracy_score(y_train, y_pred)
-            
-            win_count = sum(y_train)
-            loss_count = len(y_train) - win_count
             
             print(f"✅ M2 meta-model trained successfully!")
             print(f"   Training accuracy: {accuracy:.1%}")
