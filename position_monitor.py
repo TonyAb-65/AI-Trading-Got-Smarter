@@ -619,6 +619,22 @@ class PositionMonitor:
             
             print(f"✅ Position {position.id} closed successfully: {position.symbol}")
             print(f"   Trade created with ID: {trade.id}")
+            
+            # ========== PREDICTION VS OUTCOME LOGGING (Console Only) ==========
+            # Log M2 prediction accuracy to console - no database writes to avoid affecting trade closure
+            m2_score = position.m2_entry_quality
+            if m2_score is not None:
+                m2_predicted_good = m2_score >= 50  # M2 >= 50% = predicted good entry
+                actual_win = outcome.lower() == 'win'
+                # M2 is CORRECT if: (predicted good AND won) OR (predicted poor AND lost)
+                m2_correct = (m2_predicted_good and actual_win) or (not m2_predicted_good and not actual_win)
+                
+                print(f"📊 PREDICTION VS OUTCOME:")
+                print(f"   M2 Entry Quality: {m2_score:.1f}% ({'Good' if m2_predicted_good else 'Poor'} entry predicted)")
+                print(f"   Actual Outcome: {outcome.upper()}")
+                print(f"   M2 Prediction: {'✅ CORRECT' if m2_correct else '❌ INCORRECT'}")
+            # ========== END PREDICTION VS OUTCOME LOGGING ==========
+            
             print(f"   Learning from trade...")
             
             from ml_engine import MLTradingEngine
