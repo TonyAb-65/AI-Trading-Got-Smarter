@@ -35,6 +35,11 @@ def check_divergence_resolution(event, current_price, trend_context=None):
         outcome: 'success', 'failed', 'expired', or None
     """
     detection_price = event.detection_price
+    
+    # Guard against division by zero
+    if not detection_price or detection_price == 0:
+        return True, 'expired'  # Can't calculate, mark as expired
+    
     price_change_pct = ((current_price - detection_price) / detection_price) * 100
     
     # Calculate time elapsed
