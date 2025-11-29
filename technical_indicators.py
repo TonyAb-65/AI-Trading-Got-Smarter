@@ -210,15 +210,18 @@ class TechnicalIndicators:
     
     def get_momentum_timing(self, timeframe_minutes=60):
         """
-        Analyze multi-timeframe RSI and KDJ to estimate momentum persistence.
+        Analyze 5 momentum indicators to estimate momentum persistence.
         Returns timing analysis showing how long current momentum is likely to continue.
         
         Args:
             timeframe_minutes: The selected chart timeframe in minutes (60=1H, 240=4H, etc.)
         
-        Uses:
+        Uses (5 Pro-Level Indicators):
         - RSI_6, RSI_12, RSI_24: Multi-timeframe momentum alignment
         - Stoch_K, Stoch_D, Stoch_J: KDJ momentum dynamics
+        - MACD, MACD_signal, MACD_hist: Trend confirmation
+        - ADX: Trend strength measurement
+        - OBV slope: Smart money accumulation/distribution
         
         Returns dict with:
         - momentum_direction: 'bullish', 'bearish', or 'neutral'
@@ -227,7 +230,11 @@ class TechnicalIndicators:
         - timeframe_label: human-readable timeframe (e.g., "1H", "4H")
         - rsi_alignment: how RSI timeframes are aligned
         - kdj_dynamics: J/K/D relationship analysis
+        - macd_trend: MACD confirmation status
+        - adx_strength: trend strength status
+        - obv_flow: smart money direction
         - timing_confidence: confidence in timing estimate
+        - signals_aligned: count of aligned signals out of 5
         - advisory: human-readable timing advisory
         """
         indicators = self.get_latest_indicators()
@@ -247,6 +254,14 @@ class TechnicalIndicators:
         stoch_d = indicators.get('Stoch_D')
         stoch_j = indicators.get('Stoch_J')
         
+        # Get MACD values (NEW)
+        macd = indicators.get('MACD')
+        macd_signal = indicators.get('MACD_signal')
+        macd_hist = indicators.get('MACD_hist')
+        
+        # Get ADX value (NEW)
+        adx = indicators.get('ADX')
+        
         # Initialize result
         result = {
             'momentum_direction': 'neutral',
@@ -256,12 +271,16 @@ class TechnicalIndicators:
             'timeframe_label': timeframe_label,
             'rsi_alignment': 'neutral',
             'kdj_dynamics': 'neutral',
+            'macd_trend': 'neutral',
+            'adx_strength': 'weak',
+            'obv_flow': 'neutral',
             'timing_confidence': 0.0,
+            'signals_aligned': 0,
             'advisory': '',
             'details': {}
         }
         
-        # Check if we have all required data
+        # Check if we have minimum required data (RSI + KDJ are essential)
         if None in [rsi_6, rsi_12, rsi_24, stoch_k, stoch_d, stoch_j]:
             result['advisory'] = 'Insufficient data for timing analysis'
             return result
@@ -273,7 +292,11 @@ class TechnicalIndicators:
             'RSI_24': round(rsi_24, 2),
             'Stoch_K': round(stoch_k, 2),
             'Stoch_D': round(stoch_d, 2),
-            'Stoch_J': round(stoch_j, 2)
+            'Stoch_J': round(stoch_j, 2),
+            'MACD': round(macd, 4) if macd else None,
+            'MACD_signal': round(macd_signal, 4) if macd_signal else None,
+            'MACD_hist': round(macd_hist, 4) if macd_hist else None,
+            'ADX': round(adx, 2) if adx else None
         }
         
         # ========== RSI Multi-Timeframe Analysis ==========
@@ -356,23 +379,212 @@ class TechnicalIndicators:
         elif stoch_j < 0:
             kdj_candles = max(1, kdj_candles - 1)
         
-        # ========== Combine RSI and KDJ for Overall Timing ==========
-        estimated_candles = (rsi_candles + kdj_candles) / 2
+        # ========== MACD Trend Confirmation (NEW) ==========
+        # MACD > Signal = bullish, histogram growing = momentum building
+        # MACD < Signal = bearish, histogram shrinking = momentum fading
+        macd_momentum = 'neutral'
+        macd_candles = 2  # Default neutral contribution
         
-        # Determine overall momentum direction
-        if rsi_momentum in ['bullish', 'bullish_weak'] and kdj_momentum in ['bullish', 'reversal_up']:
-            result['momentum_direction'] = 'bullish'
-            result['timing_confidence'] = 0.8 if rsi_momentum == 'bullish' and kdj_momentum == 'bullish' else 0.5
-        elif rsi_momentum in ['bearish', 'bearish_weak'] and kdj_momentum in ['bearish', 'reversal_down']:
-            result['momentum_direction'] = 'bearish'
-            result['timing_confidence'] = 0.8 if rsi_momentum == 'bearish' and kdj_momentum == 'bearish' else 0.5
-        elif kdj_momentum in ['reversal_up', 'reversal_down']:
-            result['momentum_direction'] = 'reversal_imminent'
-            result['timing_confidence'] = 0.7
-            estimated_candles = 1
+        if macd is not None and macd_signal is not None and macd_hist is not None:
+            if macd > macd_signal:
+                if macd_hist > 0:
+                    result['macd_trend'] = 'bullish_confirmed'
+                    macd_momentum = 'bullish'
+                    macd_candles = 3 + abs(macd_hist) * 10  # Stronger histogram = more momentum
+                else:
+                    result['macd_trend'] = 'bullish_weakening'
+                    macd_momentum = 'bullish_weak'
+                    macd_candles = 2
+            elif macd < macd_signal:
+                if macd_hist < 0:
+                    result['macd_trend'] = 'bearish_confirmed'
+                    macd_momentum = 'bearish'
+                    macd_candles = 3 + abs(macd_hist) * 10
+                else:
+                    result['macd_trend'] = 'bearish_weakening'
+                    macd_momentum = 'bearish_weak'
+                    macd_candles = 2
+            else:
+                result['macd_trend'] = 'neutral'
+                macd_momentum = 'neutral'
+                macd_candles = 1  # Crossover imminent
+            
+            # Cap MACD candles contribution
+            macd_candles = min(macd_candles, 6)
+        
+        # ========== ADX Trend Strength (NEW) ==========
+        # ADX > 25 = trend has strength, rising = momentum increasing
+        # ADX < 20 = weak/ranging market, timing less reliable
+        adx_multiplier = 1.0  # Default - no adjustment
+        
+        if adx is not None:
+            if adx > 40:
+                result['adx_strength'] = 'very_strong'
+                adx_multiplier = 1.3  # Strong trend extends timing
+            elif adx > 25:
+                result['adx_strength'] = 'strong'
+                adx_multiplier = 1.15  # Moderate extension
+            elif adx > 20:
+                result['adx_strength'] = 'moderate'
+                adx_multiplier = 1.0  # No change
+            else:
+                result['adx_strength'] = 'weak'
+                adx_multiplier = 0.7  # Weak trend = less reliable timing
+        
+        # ========== OBV Smart Money Flow (NEW) ==========
+        # Calculate OBV slope from recent data
+        obv_momentum = 'neutral'
+        
+        if len(self.df) >= 10:
+            try:
+                obv_recent = self.df['OBV'].tail(10)
+                if len(obv_recent.dropna()) >= 5:
+                    obv_slope = (obv_recent.iloc[-1] - obv_recent.iloc[0]) / len(obv_recent)
+                    price_recent = self.df['close'].tail(10)
+                    price_slope = (price_recent.iloc[-1] - price_recent.iloc[0]) / len(price_recent)
+                    
+                    # OBV rising = accumulation (smart money buying)
+                    # OBV falling = distribution (smart money selling)
+                    if obv_slope > 0:
+                        result['obv_flow'] = 'accumulation'
+                        obv_momentum = 'bullish'
+                        # Check for bullish divergence (price down but OBV up)
+                        if price_slope < 0:
+                            result['obv_flow'] = 'bullish_divergence'
+                    elif obv_slope < 0:
+                        result['obv_flow'] = 'distribution'
+                        obv_momentum = 'bearish'
+                        # Check for bearish divergence (price up but OBV down)
+                        if price_slope > 0:
+                            result['obv_flow'] = 'bearish_divergence'
+                    else:
+                        result['obv_flow'] = 'neutral'
+                        obv_momentum = 'neutral'
+            except Exception:
+                pass  # OBV analysis failed, continue with neutral
+        
+        # ========== Combine Indicators: Core (RSI/KDJ/MACD) + Confirmers (ADX/OBV) ==========
+        # Core indicators determine direction, confirmers validate or warn of divergence
+        
+        base_candles = (rsi_candles + kdj_candles + macd_candles) / 3
+        
+        # Determine CORE momentum direction from RSI, KDJ, MACD (3 core indicators)
+        core_bullish = 0
+        core_bearish = 0
+        
+        # RSI signal (core)
+        if rsi_momentum in ['bullish', 'bullish_weak']:
+            core_bullish += 1
+        elif rsi_momentum in ['bearish', 'bearish_weak']:
+            core_bearish += 1
+        
+        # KDJ signal (core)
+        if kdj_momentum in ['bullish', 'reversal_up']:
+            core_bullish += 1
+        elif kdj_momentum in ['bearish', 'reversal_down']:
+            core_bearish += 1
+        
+        # MACD signal (core)
+        if macd_momentum in ['bullish', 'bullish_weak']:
+            core_bullish += 1
+        elif macd_momentum in ['bearish', 'bearish_weak']:
+            core_bearish += 1
+        
+        # Determine core direction (need 2/3 agreement)
+        if core_bullish >= 2:
+            core_direction = 'bullish'
+        elif core_bearish >= 2:
+            core_direction = 'bearish'
         else:
+            core_direction = 'mixed'
+        
+        result['details']['core_direction'] = core_direction
+        result['details']['core_bullish'] = core_bullish
+        result['details']['core_bearish'] = core_bearish
+        
+        # ========== ADX/OBV Confirmation Check ==========
+        # These confirm or warn about potential divergence
+        adx_confirms = False
+        obv_confirms = False
+        divergence_warning = None
+        
+        # ADX confirmation: Strong trend in core direction
+        if adx is not None and adx > 25:
+            adx_confirms = True  # Strong trend exists
+            estimated_candles = base_candles * adx_multiplier  # Extend timing
+        else:
+            # Weak ADX - trend may not persist
+            estimated_candles = base_candles * 0.8  # Reduce timing
+        
+        # OBV confirmation: Smart money aligned with core direction
+        if core_direction == 'bullish':
+            if obv_momentum == 'bullish':
+                obv_confirms = True
+            elif obv_momentum == 'bearish':
+                # OBV DIVERGENCE: Core says bullish but smart money selling
+                divergence_warning = 'bearish_divergence'
+                result['obv_flow'] = 'smart_money_selling'
+                estimated_candles = max(1, estimated_candles * 0.5)  # Sharply reduce timing
+        elif core_direction == 'bearish':
+            if obv_momentum == 'bearish':
+                obv_confirms = True
+            elif obv_momentum == 'bullish':
+                # OBV DIVERGENCE: Core says bearish but smart money buying
+                divergence_warning = 'bullish_divergence'
+                result['obv_flow'] = 'smart_money_buying'
+                estimated_candles = max(1, estimated_candles * 0.5)  # Sharply reduce timing
+        
+        # Store confirmation status
+        result['details']['adx_confirms'] = adx_confirms
+        result['details']['obv_confirms'] = obv_confirms
+        result['details']['divergence_warning'] = divergence_warning
+        
+        # Calculate overall signal alignment
+        # Core: 3 possible, Confirmers: 2 possible
+        total_aligned = max(core_bullish, core_bearish)
+        if adx_confirms:
+            total_aligned += 1
+        if obv_confirms:
+            total_aligned += 1
+        
+        result['signals_aligned'] = total_aligned
+        
+        # ========== Determine Momentum Direction ==========
+        # Core direction is primary, but divergence warning can override confidence
+        
+        # Check for divergence FIRST - this is critical
+        if divergence_warning:
+            # Divergence detected - momentum may reverse soon
+            result['momentum_direction'] = core_direction  # Still show core direction
+            result['timing_confidence'] = 0.3  # Very low confidence due to divergence
+            estimated_candles = max(1, estimated_candles * 0.4)  # Sharply reduce timing
+        elif total_aligned >= 4:
+            # Strong alignment: 3 core + ADX + OBV all confirm
+            result['momentum_direction'] = core_direction
+            result['timing_confidence'] = 0.95  # Highest confidence
+        elif total_aligned == 3 and adx_confirms:
+            # Good alignment with strong trend
+            result['momentum_direction'] = core_direction
+            result['timing_confidence'] = 0.85
+        elif total_aligned == 3:
+            # Core aligned but confirmers mixed
+            result['momentum_direction'] = core_direction
+            result['timing_confidence'] = 0.7
+        elif kdj_momentum in ['reversal_up', 'reversal_down']:
+            # KDJ signaling imminent reversal
+            result['momentum_direction'] = 'reversal_imminent'
+            result['timing_confidence'] = 0.6
+            estimated_candles = 1
+        elif core_direction != 'mixed':
+            # Core has direction but weak confirmation
+            result['momentum_direction'] = core_direction
+            result['timing_confidence'] = 0.5
+            estimated_candles = max(1, estimated_candles * 0.7)
+        else:
+            # No clear direction
             result['momentum_direction'] = 'mixed'
-            result['timing_confidence'] = 0.4
+            result['timing_confidence'] = 0.3
+            estimated_candles = max(1, estimated_candles * 0.5)
         
         result['estimated_candles'] = round(max(1, estimated_candles), 1)
         
@@ -390,21 +602,66 @@ class TechnicalIndicators:
         
         candle_display = f"{result['estimated_candles']:.0f} {timeframe_label} candles"
         
-        # ========== Generate Advisory ==========
-        if result['momentum_direction'] == 'bullish':
-            if estimated_candles >= 3:
-                result['advisory'] = f"Bullish momentum likely persists {candle_display} ({time_display}) - RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']}"
+        # Build signal summary for advisory
+        signal_summary = f"{result['signals_aligned']}/5 signals"
+        confirm_status = []
+        if adx_confirms:
+            confirm_status.append("ADX")
+        if obv_confirms:
+            confirm_status.append("OBV")
+        confirm_str = f" [{'+'.join(confirm_status)} confirm]" if confirm_status else ""
+        
+        # ========== Generate Enhanced Advisory with Divergence Warnings ==========
+        
+        # DIVERGENCE WARNING TAKES PRIORITY
+        if divergence_warning:
+            if divergence_warning == 'bearish_divergence':
+                result['advisory'] = f"DIVERGENCE WARNING: Core {core_direction.upper()} but OBV shows SMART MONEY SELLING - reversal likely within {candle_display} ({time_display})"
+            elif divergence_warning == 'bullish_divergence':
+                result['advisory'] = f"DIVERGENCE WARNING: Core {core_direction.upper()} but OBV shows SMART MONEY BUYING - reversal likely within {candle_display} ({time_display})"
+        elif result['momentum_direction'] == 'bullish':
+            if result['signals_aligned'] >= 4:
+                result['advisory'] = f"STRONG Bullish: {signal_summary}{confirm_str} - momentum persists {candle_display} ({time_display})"
+            elif result['signals_aligned'] == 3:
+                result['advisory'] = f"Bullish: {signal_summary}{confirm_str} - momentum likely {candle_display} ({time_display})"
             else:
-                result['advisory'] = f"Bullish momentum weakening, ~{candle_display} ({time_display}) before potential reversal"
+                missing = []
+                if not adx_confirms:
+                    missing.append("ADX weak")
+                if not obv_confirms:
+                    missing.append("OBV unconfirmed")
+                missing_str = f" [{', '.join(missing)}]" if missing else ""
+                result['advisory'] = f"Weak Bullish: {signal_summary}{missing_str} - timing uncertain ~{candle_display} ({time_display})"
         elif result['momentum_direction'] == 'bearish':
-            if estimated_candles >= 3:
-                result['advisory'] = f"Bearish momentum likely persists {candle_display} ({time_display}) - RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']}"
+            if result['signals_aligned'] >= 4:
+                result['advisory'] = f"STRONG Bearish: {signal_summary}{confirm_str} - momentum persists {candle_display} ({time_display})"
+            elif result['signals_aligned'] == 3:
+                result['advisory'] = f"Bearish: {signal_summary}{confirm_str} - momentum likely {candle_display} ({time_display})"
             else:
-                result['advisory'] = f"Bearish momentum weakening, ~{candle_display} ({time_display}) before potential reversal"
+                missing = []
+                if not adx_confirms:
+                    missing.append("ADX weak")
+                if not obv_confirms:
+                    missing.append("OBV unconfirmed")
+                missing_str = f" [{', '.join(missing)}]" if missing else ""
+                result['advisory'] = f"Weak Bearish: {signal_summary}{missing_str} - timing uncertain ~{candle_display} ({time_display})"
         elif result['momentum_direction'] == 'reversal_imminent':
-            result['advisory'] = f"Reversal signals detected! J-line {'peaked' if kdj_j_peaked else 'bottomed'} - expect direction change within 1-2 {timeframe_label} candles ({time_display})"
+            result['advisory'] = f"REVERSAL: J-line {'peaked' if kdj_j_peaked else 'bottomed'} - expect direction change within 1-2 {timeframe_label} candles"
         else:
-            result['advisory'] = f"Mixed signals - momentum unclear, wait for alignment (RSI: {result['rsi_alignment']}, KDJ: {result['kdj_dynamics']})"
+            # Mixed signals - core indicators disagree
+            result['advisory'] = f"MIXED: Core split ({core_bullish}B/{core_bearish}B) - no clear momentum, wait for alignment"
+        
+        # Add indicator breakdown to details
+        result['details']['signal_breakdown'] = {
+            'RSI': rsi_momentum,
+            'KDJ': kdj_momentum,
+            'MACD': macd_momentum,
+            'OBV': obv_momentum,
+            'ADX': result['adx_strength'],
+            'adx_confirms': adx_confirms,
+            'obv_confirms': obv_confirms,
+            'divergence_warning': divergence_warning
+        }
         
         return result
     
