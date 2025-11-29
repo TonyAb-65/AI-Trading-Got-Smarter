@@ -1029,13 +1029,26 @@ class MLTradingEngine:
                 if entry_quality is not None:
                     print(f"🎯 M2 Entry Quality: {entry_quality:.1%}")
                     
+                    # ALWAYS check momentum conflict regardless of M2 score
+                    momentum_timing = indicators.get('momentum_timing', {})
+                    momentum_dir = momentum_timing.get('momentum_direction', 'neutral')
+                    est_candles = momentum_timing.get('estimated_candles', 0)
+                    est_hours = momentum_timing.get('estimated_hours', 0)
+                    signals_aligned = momentum_timing.get('signals_aligned', 0)
+                    
+                    # Check for momentum conflict: LONG trade but bearish momentum
+                    momentum_conflict = momentum_dir == 'bearish' and est_candles >= 2
+                    
                     # M2 provides advisory warnings but does NOT block the signal
                     if entry_quality < 0.5:
                         reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
-                        # Generate specific advisory reason based on market conditions and momentum timing
-                        momentum_timing = indicators.get('momentum_timing', {})
                         advisory_reason = self.get_m2_advisory_reason(indicators, 'LONG', momentum_timing)
                         reasons.append(f"⚠️ M2 Advisory: {advisory_reason}")
+                    elif momentum_conflict:
+                        # HIGH M2 but momentum conflicts - CRITICAL WARNING
+                        time_display = f"~{est_hours:.0f}h" if est_hours >= 1 else f"~{est_hours*60:.0f}m"
+                        reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}%")
+                        reasons.append(f"⚠️ MOMENTUM CONFLICT: Bearish momentum ({signals_aligned}/5) persists {est_candles:.0f} candles ({time_display}) - price may drop before reversal")
                     else:
                         reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
                 else:
@@ -1071,13 +1084,26 @@ class MLTradingEngine:
                 if entry_quality is not None:
                     print(f"🎯 M2 Entry Quality: {entry_quality:.1%}")
                     
+                    # ALWAYS check momentum conflict regardless of M2 score
+                    momentum_timing = indicators.get('momentum_timing', {})
+                    momentum_dir = momentum_timing.get('momentum_direction', 'neutral')
+                    est_candles = momentum_timing.get('estimated_candles', 0)
+                    est_hours = momentum_timing.get('estimated_hours', 0)
+                    signals_aligned = momentum_timing.get('signals_aligned', 0)
+                    
+                    # Check for momentum conflict: SHORT trade but bullish momentum
+                    momentum_conflict = momentum_dir == 'bullish' and est_candles >= 2
+                    
                     # M2 provides advisory warnings but does NOT block the signal
                     if entry_quality < 0.5:
                         reasons.append(f"⚠️ M2 Entry Quality: {entry_quality*100:.1f}% (below 50% threshold)")
-                        # Generate specific advisory reason based on market conditions and momentum timing
-                        momentum_timing = indicators.get('momentum_timing', {})
                         advisory_reason = self.get_m2_advisory_reason(indicators, 'SHORT', momentum_timing)
                         reasons.append(f"⚠️ M2 Advisory: {advisory_reason}")
+                    elif momentum_conflict:
+                        # HIGH M2 but momentum conflicts - CRITICAL WARNING
+                        time_display = f"~{est_hours:.0f}h" if est_hours >= 1 else f"~{est_hours*60:.0f}m"
+                        reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}%")
+                        reasons.append(f"⚠️ MOMENTUM CONFLICT: Bullish momentum ({signals_aligned}/5) persists {est_candles:.0f} candles ({time_display}) - price may rise before reversal")
                     else:
                         reasons.append(f"✅ M2 Entry Quality: {entry_quality*100:.1f}% (good entry timing)")
                 else:
