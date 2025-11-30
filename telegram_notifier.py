@@ -9,8 +9,12 @@ def send_telegram_alert(symbol, position_type, entry_price, current_price, pnl_p
                        severity, alert_message, recommendation, reason):
     """
     Send trading alert to Telegram.
-    Only called for HIGH severity alerts to avoid spam.
-    Implements 5-minute cooldown per symbol to prevent continuous alerts.
+    Handles three severity levels:
+    - EARLY_WARNING: Momentum shift detected (heads-up, not urgent)
+    - MEDIUM: Trend shift / pattern weakening
+    - HIGH: Critical - approaching stop loss, pattern reversed
+    
+    Implements cooldown per alert TYPE to prevent spam while allowing different alert types.
     """
     global _alert_cooldowns
     
@@ -22,7 +26,16 @@ def send_telegram_alert(symbol, position_type, entry_price, current_price, pnl_p
         return False
     
     now = datetime.now()
-    cooldown_key = f"{symbol}_{position_type}"
+    # Use alert type + symbol for cooldown (allows different alert types to be sent)
+    if severity == "LOW":
+        alert_type = "LOW"
+    elif severity == "EARLY_WARNING":
+        alert_type = "EARLY"
+    elif severity == "MEDIUM":
+        alert_type = "MEDIUM"
+    else:
+        alert_type = "HIGH"
+    cooldown_key = f"{symbol}_{position_type}_{alert_type}"
     
     if cooldown_key in _alert_cooldowns:
         last_alert_time, last_message = _alert_cooldowns[cooldown_key]
@@ -30,26 +43,43 @@ def send_telegram_alert(symbol, position_type, entry_price, current_price, pnl_p
         
         if time_since_last < ALERT_COOLDOWN_MINUTES:
             if alert_message == last_message:
-                print(f"⏸️ Skipping duplicate alert for {symbol} (cooldown: {ALERT_COOLDOWN_MINUTES - time_since_last:.1f} min remaining)")
+                print(f"⏸️ Skipping duplicate {alert_type} alert for {symbol} (cooldown: {ALERT_COOLDOWN_MINUTES - time_since_last:.1f} min remaining)")
                 return False
             else:
-                print(f"📨 New alert type for {symbol} - sending despite cooldown")
+                print(f"📨 New {alert_type} alert message for {symbol} - sending despite cooldown")
     
-    severity_emoji = "🚨" if severity == "HIGH" else "⚠️"
+    # Different emoji and urgency based on severity
+    if severity == "LOW":
+        severity_emoji = "📊"
+        urgency_text = "Keep watching"
+        header = "MOMENTUM NOTICE"
+    elif severity == "EARLY_WARNING":
+        severity_emoji = "⚡"
+        urgency_text = "Monitor position"
+        header = "EARLY WARNING"
+    elif severity == "MEDIUM":
+        severity_emoji = "⚠️"
+        urgency_text = "Review position"
+        header = "TREND ALERT"
+    else:  # HIGH
+        severity_emoji = "🚨"
+        urgency_text = "Check Position Tracker immediately"
+        header = "CRITICAL ALERT"
+    
     pnl_emoji = "📉" if pnl_percentage < 0 else "📈"
     
     message = f"""
-{severity_emoji} <b>TRADING ALERT - {symbol}</b>
+{severity_emoji} <b>{header} - {symbol}</b>
 
 <b>Position:</b> {position_type} @ ${entry_price:,.2f}
 <b>Current:</b> ${current_price:,.2f} ({pnl_percentage:+.2f}%) {pnl_emoji}
 
 {alert_message}
 
-<b>M1 Recommendation:</b> {recommendation}
+<b>Recommendation:</b> {recommendation}
 <b>Reason:</b> {reason}
 
-📍 Check Position Tracker immediately
+📍 {urgency_text}
 🕐 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
 """
     
