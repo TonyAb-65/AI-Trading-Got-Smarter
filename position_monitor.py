@@ -92,7 +92,14 @@ class PositionMonitor:
                 position, current_price, indicators, signals
             )
             
-            # Add profile comparison alerts (early warning system)
+            # EARLY WARNING: Check momentum timing BEFORE profile deviation
+            # Momentum shifts faster than profile patterns - gives earlier heads-up
+            momentum_alerts = self._check_momentum_timing(
+                position, tech_indicators, timeframe
+            )
+            monitoring_alerts.extend(momentum_alerts)
+            
+            # Add profile comparison alerts (deeper analysis)
             # NOW uses enriched indicators with S/R and trend_context
             profile_alerts = self._check_profile_deviation(
                 position, indicators
@@ -138,24 +145,28 @@ class PositionMonitor:
             position.last_obv_slope = current_obv_slope
             position.monitoring_alerts = monitoring_alerts
             
-            # Send Telegram alert for HIGH severity alerts only
-            high_severity_alerts = [a for a in monitoring_alerts if a.get('severity') == 'HIGH']
-            if high_severity_alerts:
-                try:
-                    alert = high_severity_alerts[0]
-                    send_telegram_alert(
-                        symbol=position.symbol,
-                        position_type=position.trade_type,
-                        entry_price=entry_price,
-                        current_price=current_price,
-                        pnl_percentage=pnl_percentage,
-                        severity='HIGH',
-                        alert_message=alert.get('message', 'Market alert'),
-                        recommendation=recommendation['action'],
-                        reason=recommendation['reason']
-                    )
-                except Exception as e:
-                    print(f"Telegram notification error: {e}")
+            # Send Telegram alerts for all severity levels (one per type to avoid spam)
+            # Priority: HIGH > MEDIUM > EARLY_WARNING > LOW (send highest severity first)
+            sent_severities = set()
+            for severity_level in ['HIGH', 'MEDIUM', 'EARLY_WARNING', 'LOW']:
+                severity_alerts = [a for a in monitoring_alerts if a.get('severity') == severity_level]
+                if severity_alerts and severity_level not in sent_severities:
+                    try:
+                        alert = severity_alerts[0]
+                        send_telegram_alert(
+                            symbol=position.symbol,
+                            position_type=position.trade_type,
+                            entry_price=entry_price,
+                            current_price=current_price,
+                            pnl_percentage=pnl_percentage,
+                            severity=severity_level,
+                            alert_message=alert.get('message', 'Market alert'),
+                            recommendation=alert.get('recommendation', recommendation['action']),
+                            reason=recommendation['reason']
+                        )
+                        sent_severities.add(severity_level)
+                    except Exception as e:
+                        print(f"Telegram notification error ({severity_level}): {e}")
             
             return {
                 'symbol': position.symbol,
@@ -263,6 +274,111 @@ class PositionMonitor:
                 })
         
         return alerts
+    
+    def _check_momentum_timing(self, position, tech_indicators, timeframe):
+        """
+        EARLY WARNING SYSTEM - Checks momentum timing before profile deviation.
+        Momentum timing changes FASTER than profile patterns, giving early heads-up.
+        
+        Uses 5-indicator momentum analysis (RSI multi-TF, KDJ, MACD, ADX, OBV)
+        to detect when momentum is shifting against the position direction.
+        """
+        alerts = []
+        
+        try:
+            # Convert timeframe string to minutes
+            timeframe_map = {'5m': 5, '15m': 15, '30m': 30, '1H': 60, '4H': 240, '1D': 1440}
+            tf_minutes = timeframe_map.get(timeframe, 60)
+            
+            # Get current momentum timing analysis
+            momentum = tech_indicators.get_momentum_timing(tf_minutes)
+            
+            if not momentum or momentum.get('advisory') == 'Insufficient data for timing analysis':
+                return alerts
+            
+            momentum_dir = momentum.get('momentum_direction', 'neutral')
+            signals_aligned = momentum.get('signals_aligned', 0)
+            est_candles = momentum.get('estimated_candles', 0)
+            est_hours = momentum.get('estimated_hours', 0)
+            
+            # Format time display
+            if est_hours >= 24:
+                time_display = f"~{est_hours/24:.1f} days"
+            elif est_hours >= 1:
+                time_display = f"~{est_hours:.0f}h"
+            else:
+                time_display = f"~{est_hours*60:.0f}m"
+            
+            # Check for momentum conflict with position direction
+            # Strong conflict: momentum_dir is opposite to position (3+ signals)
+            # Weak conflict: early signs of opposition even if momentum_dir is neutral (2 signals)
+            
+            strong_conflict = False
+            weak_conflict = False
+            conflict_message = ""
+            
+            # Get RSI and KDJ alignment from momentum details
+            rsi_alignment = momentum.get('rsi_alignment', 'neutral')
+            kdj_dynamics = momentum.get('kdj_dynamics', 'neutral')
+            
+            if position.trade_type == 'LONG':
+                # Check for bearish signals against LONG position
+                if momentum_dir == 'bearish':
+                    strong_conflict = True
+                    conflict_message = f"⚡ EARLY WARNING: Bearish momentum detected ({signals_aligned}/5 signals)"
+                elif signals_aligned >= 2 and (
+                    'bearish' in rsi_alignment or 
+                    'bearish' in kdj_dynamics or
+                    'reversal_down' in kdj_dynamics
+                ):
+                    weak_conflict = True
+                    conflict_message = f"📊 Momentum weakening: Early bearish signals ({signals_aligned}/5)"
+                    
+            elif position.trade_type == 'SHORT':
+                # Check for bullish signals against SHORT position
+                if momentum_dir == 'bullish':
+                    strong_conflict = True
+                    conflict_message = f"⚡ EARLY WARNING: Bullish momentum detected ({signals_aligned}/5 signals)"
+                elif signals_aligned >= 2 and (
+                    'bullish' in rsi_alignment or 
+                    'bullish' in kdj_dynamics or
+                    'reversal_up' in kdj_dynamics
+                ):
+                    weak_conflict = True
+                    conflict_message = f"📊 Momentum weakening: Early bullish signals ({signals_aligned}/5)"
+            
+            if strong_conflict and signals_aligned >= 3:
+                # Strong momentum conflict (3+ signals aligned against position)
+                alerts.append({
+                    'type': 'MOMENTUM_SHIFT',
+                    'severity': 'EARLY_WARNING',
+                    'message': f"{conflict_message} - may persist {est_candles:.0f} candles ({time_display})",
+                    'recommendation': 'Monitor closely - momentum shifting against position',
+                    'momentum_direction': momentum_dir,
+                    'signals_aligned': signals_aligned,
+                    'estimated_candles': est_candles,
+                    'estimated_hours': est_hours
+                })
+                print(f"⚡ Momentum Early Warning: {position.symbol} ({position.trade_type}) - {momentum_dir} momentum ({signals_aligned}/5)")
+                
+            elif weak_conflict or (strong_conflict and signals_aligned == 2):
+                # Weak momentum conflict (2 signals or early opposition detected)
+                direction_text = momentum_dir if momentum_dir != 'neutral' else ('bearish' if position.trade_type == 'LONG' else 'bullish')
+                alerts.append({
+                    'type': 'MOMENTUM_WARNING',
+                    'severity': 'LOW',
+                    'message': conflict_message,
+                    'recommendation': 'Watch for further momentum changes',
+                    'momentum_direction': direction_text,
+                    'signals_aligned': signals_aligned
+                })
+                print(f"📊 Momentum Warning: {position.symbol} ({position.trade_type}) - early {direction_text} signals ({signals_aligned}/5)")
+            
+            return alerts
+            
+        except Exception as e:
+            print(f"Momentum timing check error: {e}")
+            return alerts
     
     def _check_profile_deviation(self, position, current_indicators):
         """
