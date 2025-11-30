@@ -567,13 +567,26 @@ class TechnicalIndicators:
         obv_confirms = False
         divergence_warning = None
         
-        # ADX confirmation: Strong trend in core direction
+        # Get DI values for direction confirmation
+        di_plus = indicators.get('DI_plus', 0)
+        di_minus = indicators.get('DI_minus', 0)
+        
+        # ADX confirmation: Strong trend AND direction must match core direction
+        # ADX > 25 = strong trend, but DI+ vs DI- determines direction
         if adx is not None and adx > 25:
-            adx_confirms = True  # Strong trend exists
-            estimated_candles = base_candles * adx_multiplier  # Extend timing
+            if core_direction == 'bullish' and di_plus > di_minus:
+                adx_confirms = True  # Strong bullish trend confirmed by DI+
+                estimated_candles = base_candles * adx_multiplier
+            elif core_direction == 'bearish' and di_minus > di_plus:
+                adx_confirms = True  # Strong bearish trend confirmed by DI-
+                estimated_candles = base_candles * adx_multiplier
+            else:
+                # ADX strong but direction conflicts - treat as divergence
+                adx_confirms = False
+                estimated_candles = base_candles * 0.7  # Reduce timing due to conflict
         else:
             # Weak ADX - trend may not persist
-            estimated_candles = base_candles * 0.8  # Reduce timing
+            estimated_candles = base_candles * 0.8
         
         # OBV confirmation: Smart money aligned with core direction
         if core_direction == 'bullish':
@@ -597,6 +610,9 @@ class TechnicalIndicators:
         result['details']['adx_confirms'] = adx_confirms
         result['details']['obv_confirms'] = obv_confirms
         result['details']['divergence_warning'] = divergence_warning
+        result['details']['di_plus'] = round(di_plus, 1) if di_plus else None
+        result['details']['di_minus'] = round(di_minus, 1) if di_minus else None
+        result['details']['obv_momentum'] = obv_momentum
         
         # Calculate overall signal alignment
         # Core: 3 possible, Confirmers: 2 possible
