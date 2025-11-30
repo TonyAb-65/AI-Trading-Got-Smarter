@@ -145,14 +145,17 @@ class PositionMonitor:
             position.last_obv_slope = current_obv_slope
             position.monitoring_alerts = monitoring_alerts
             
-            # Send Telegram alerts for all severity levels (one per type to avoid spam)
-            # Priority: HIGH > MEDIUM > EARLY_WARNING > LOW (send highest severity first)
+            # Send Telegram alerts ONLY for momentum timing alerts (EARLY_WARNING, LOW)
+            # Disabled: HIGH, MEDIUM (profile/pattern alerts) - too many notifications
             sent_severities = set()
-            for severity_level in ['HIGH', 'MEDIUM', 'EARLY_WARNING', 'LOW']:
-                severity_alerts = [a for a in monitoring_alerts if a.get('severity') == severity_level]
-                if severity_alerts and severity_level not in sent_severities:
+            for severity_level in ['EARLY_WARNING', 'LOW']:
+                # Only send momentum-related alerts (MOMENTUM_SHIFT, MOMENTUM_WARNING)
+                momentum_alerts = [a for a in monitoring_alerts 
+                                   if a.get('severity') == severity_level 
+                                   and a.get('type') in ['MOMENTUM_SHIFT', 'MOMENTUM_WARNING']]
+                if momentum_alerts and severity_level not in sent_severities:
                     try:
-                        alert = severity_alerts[0]
+                        alert = momentum_alerts[0]
                         send_telegram_alert(
                             symbol=position.symbol,
                             position_type=position.trade_type,
