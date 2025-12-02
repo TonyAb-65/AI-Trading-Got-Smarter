@@ -36,6 +36,22 @@ class MLTradingEngine:
         self._load_indicator_weights()
         self._load_m2_model()  # Load M2 model if exists
     
+    def smart_round_price(self, price):
+        """
+        Smart price rounding based on value to preserve precision:
+        - Prices < $1: 5 decimals (e.g., 0.00045 for meme coins)
+        - Prices $1-$10: 4 decimals (e.g., 2.0401 for XRP)
+        - Prices >= $10: 2 decimals (e.g., 95234.50 for BTC)
+        """
+        if price is None:
+            return None
+        if price < 1:
+            return round(price, 5)
+        elif price < 10:
+            return round(price, 4)
+        else:
+            return round(price, 2)
+    
     def calculate_safe_tp(self, entry_price, atr_tp, signal, support_levels, resistance_levels):
         """
         Calculate safe Take Profit that respects support/resistance levels.
@@ -54,30 +70,53 @@ class MLTradingEngine:
         # Safety buffer: stop 0.3% before S/R level to ensure fill
         buffer_pct = 0.003
         
+        # Minimum profit margin: TP must be at least 0.2% away from entry in the right direction
+        min_profit_margin = 0.002
+        
         if signal == 'LONG':
-            # For LONG: Check if any resistance between entry and ATR target
+            # For LONG: TP must be ABOVE entry price
+            min_valid_tp = entry_price * (1 + min_profit_margin)
+            
+            # Check if any resistance between entry and ATR target
             if resistance_levels:
                 for resistance in sorted(resistance_levels):
                     # If resistance is between entry and target
                     if entry_price < resistance < atr_tp:
                         # Place TP just before resistance
                         safe_tp = resistance * (1 - buffer_pct)
-                        print(f"📊 TP adjusted: {atr_tp:.2f} → {safe_tp:.2f} (stops before resistance at {resistance:.2f})")
-                        return safe_tp
-            # No resistance in the way, use ATR target
+                        
+                        # CRITICAL: Ensure TP is still above entry with minimum profit margin
+                        if safe_tp >= min_valid_tp:
+                            print(f"📊 TP adjusted: {atr_tp:.2f} → {safe_tp:.2f} (stops before resistance at {resistance:.2f})")
+                            return safe_tp
+                        else:
+                            # Buffer pushed TP below entry - skip this resistance level
+                            print(f"📊 Skipping resistance {resistance:.2f} (buffer would put TP {safe_tp:.2f} below min {min_valid_tp:.2f})")
+                            continue
+            # No valid resistance in the way, use ATR target
             return atr_tp
         
         elif signal == 'SHORT':
-            # For SHORT: Check if any support between ATR target and entry
+            # For SHORT: TP must be BELOW entry price
+            max_valid_tp = entry_price * (1 - min_profit_margin)
+            
+            # Check if any support between ATR target and entry
             if support_levels:
                 for support in sorted(support_levels, reverse=True):
                     # If support is between target and entry
                     if atr_tp < support < entry_price:
                         # Place TP just before support
                         safe_tp = support * (1 + buffer_pct)
-                        print(f"📊 TP adjusted: {atr_tp:.2f} → {safe_tp:.2f} (stops before support at {support:.2f})")
-                        return safe_tp
-            # No support in the way, use ATR target
+                        
+                        # CRITICAL: Ensure TP is still below entry with minimum profit margin
+                        if safe_tp <= max_valid_tp:
+                            print(f"📊 TP adjusted: {atr_tp:.2f} → {safe_tp:.2f} (stops before support at {support:.2f})")
+                            return safe_tp
+                        else:
+                            # Buffer pushed TP above entry - skip this support level
+                            print(f"📊 Skipping support {support:.2f} (buffer would put TP {safe_tp:.2f} above max {max_valid_tp:.2f})")
+                            continue
+            # No valid support in the way, use ATR target
             return atr_tp
         
         return atr_tp
@@ -1148,9 +1187,9 @@ class MLTradingEngine:
                 'confidence': round(max(final_probability, 1 - final_probability) * 100, 2),
                 'win_probability': round(final_probability * 100, 2),
                 'recommendation': recommendation,
-                'entry_price': round(entry_price, 2) if entry_price else None,
-                'stop_loss': round(stop_loss, 2) if stop_loss else None,
-                'take_profit': round(take_profit, 2) if take_profit else None,
+                'entry_price': self.smart_round_price(entry_price),
+                'stop_loss': self.smart_round_price(stop_loss),
+                'take_profit': self.smart_round_price(take_profit),
                 'ml_probability': round(ml_win_probability * 100, 2),
                 'rule_probability': round(rule_normalized * 100, 2),
                 'm2_entry_quality': round(entry_quality * 100, 2) if entry_quality is not None else None,
@@ -1350,9 +1389,9 @@ class MLTradingEngine:
             'signal': signal,
             'confidence': round(confidence, 1),
             'recommendation': recommendation,
-            'entry_price': round(entry_price, 2) if entry_price else None,
-            'stop_loss': round(stop_loss, 2) if stop_loss else None,
-            'take_profit': round(take_profit, 2) if take_profit else None,
+            'entry_price': self.smart_round_price(entry_price),
+            'stop_loss': self.smart_round_price(stop_loss),
+            'take_profit': self.smart_round_price(take_profit),
             'reasons': reasons,
             'method': 'rule_based',
             'bullish_score': bullish_signals,
