@@ -681,6 +681,42 @@ class TechnicalIndicators:
             result['timing_confidence'] = 0.3
             estimated_candles = max(1, estimated_candles * 0.5)
         
+        # ========== STEP 2: HISTORICAL PATTERN TIMING (NEW) ==========
+        # Use historical data to refine timing based on how long similar patterns lasted
+        # Direction was determined by fresh analysis (Step 1), timing uses historical patterns
+        
+        historical_timing = self._get_historical_zone_duration()
+        result['details']['historical_timing'] = historical_timing
+        
+        if historical_timing.get('has_data'):
+            # Get current zone durations
+            rsi_zone_duration = historical_timing.get('rsi_duration', 0)
+            kdj_zone_duration = historical_timing.get('kdj_duration', 0)
+            rsi_zone = historical_timing.get('rsi_zone', 'neutral')
+            kdj_zone = historical_timing.get('kdj_zone', 'neutral')
+            
+            # Calculate remaining candles based on historical averages
+            # Average overbought/oversold duration is typically 3-8 candles
+            avg_zone_duration = 5  # Default historical average
+            
+            if rsi_zone in ['overbought', 'oversold']:
+                # If already in zone for X candles, remaining = avg - current
+                rsi_remaining = max(1, avg_zone_duration - rsi_zone_duration)
+                # Weight historical timing into estimate (50% historical, 50% spread-based)
+                estimated_candles = (estimated_candles + rsi_remaining) / 2
+                result['details']['rsi_zone_info'] = f"{rsi_zone} for {rsi_zone_duration} candles, ~{rsi_remaining} remaining"
+            
+            if kdj_zone in ['overbought', 'oversold']:
+                kdj_remaining = max(1, avg_zone_duration - kdj_zone_duration)
+                # KDJ tends to reverse faster than RSI
+                estimated_candles = min(estimated_candles, kdj_remaining + 1)
+                result['details']['kdj_zone_info'] = f"{kdj_zone} for {kdj_zone_duration} candles, ~{kdj_remaining} remaining"
+            
+            # If both in extreme zones for extended period, reversal is imminent
+            if rsi_zone_duration >= 6 and kdj_zone_duration >= 4:
+                estimated_candles = max(1, min(estimated_candles, 2))
+                result['details']['extended_extreme'] = True
+        
         result['estimated_candles'] = round(max(1, estimated_candles), 1)
         
         # ========== Calculate Actual Time from Candles ==========
@@ -860,6 +896,103 @@ class TechnicalIndicators:
             return 'bearish'
         else:
             return 'neutral'
+    
+    def _get_historical_zone_duration(self):
+        """
+        Calculate how many consecutive candles RSI and KDJ have been in extreme zones.
+        Uses the DataFrame directly for historical analysis.
+        
+        Returns dict with:
+        - rsi_duration: candles RSI has been overbought/oversold
+        - rsi_zone: 'overbought', 'oversold', or 'neutral'
+        - kdj_duration: candles KDJ J has been in extreme zone
+        - kdj_zone: 'overbought', 'oversold', or 'neutral'
+        - has_data: whether sufficient data exists
+        """
+        result = {
+            'has_data': False,
+            'rsi_duration': 0,
+            'rsi_zone': 'neutral',
+            'kdj_duration': 0,
+            'kdj_zone': 'neutral'
+        }
+        
+        if len(self.df) < 5:
+            return result
+        
+        try:
+            # Get RSI values from DataFrame (use RSI_14 or RSI column)
+            rsi_col = 'RSI' if 'RSI' in self.df.columns else 'RSI_14' if 'RSI_14' in self.df.columns else None
+            stoch_j_col = 'STOCHk_14_3_3' if 'STOCHk_14_3_3' in self.df.columns else 'Stoch_J' if 'Stoch_J' in self.df.columns else None
+            
+            # Calculate RSI zone duration
+            if rsi_col and rsi_col in self.df.columns:
+                rsi_values = self.df[rsi_col].dropna().values
+                if len(rsi_values) >= 3:
+                    current_rsi = rsi_values[-1]
+                    
+                    # Determine current zone
+                    if current_rsi > 70:
+                        result['rsi_zone'] = 'overbought'
+                        threshold = 70
+                        # Count backwards while in overbought
+                        duration = 0
+                        for i in range(len(rsi_values) - 1, -1, -1):
+                            if rsi_values[i] > threshold:
+                                duration += 1
+                            else:
+                                break
+                        result['rsi_duration'] = duration
+                        result['has_data'] = True
+                        
+                    elif current_rsi < 30:
+                        result['rsi_zone'] = 'oversold'
+                        threshold = 30
+                        # Count backwards while in oversold
+                        duration = 0
+                        for i in range(len(rsi_values) - 1, -1, -1):
+                            if rsi_values[i] < threshold:
+                                duration += 1
+                            else:
+                                break
+                        result['rsi_duration'] = duration
+                        result['has_data'] = True
+            
+            # Calculate KDJ J-line zone duration
+            if stoch_j_col and stoch_j_col in self.df.columns:
+                j_values = self.df[stoch_j_col].dropna().values
+                if len(j_values) >= 3:
+                    current_j = j_values[-1]
+                    
+                    if current_j > 80:
+                        result['kdj_zone'] = 'overbought'
+                        threshold = 80
+                        duration = 0
+                        for i in range(len(j_values) - 1, -1, -1):
+                            if j_values[i] > threshold:
+                                duration += 1
+                            else:
+                                break
+                        result['kdj_duration'] = duration
+                        result['has_data'] = True
+                        
+                    elif current_j < 20:
+                        result['kdj_zone'] = 'oversold'
+                        threshold = 20
+                        duration = 0
+                        for i in range(len(j_values) - 1, -1, -1):
+                            if j_values[i] < threshold:
+                                duration += 1
+                            else:
+                                break
+                        result['kdj_duration'] = duration
+                        result['has_data'] = True
+            
+            return result
+            
+        except Exception as e:
+            print(f"Historical zone duration error: {e}")
+            return result
     
     def get_indicator_history(self, symbol, market_type, lookback=50):
         """
