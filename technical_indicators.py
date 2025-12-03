@@ -491,26 +491,45 @@ class TechnicalIndicators:
                 adx_multiplier = 0.7  # Weak trend = less reliable timing
         
         # ========== OBV Smart Money Flow (NEW) ==========
-        # Calculate OBV slope from recent data
+        # Calculate OBV slope using LINEAR REGRESSION (same method as display for consistency)
         obv_momentum = 'neutral'
+        obv_slope = 0.0
         
         if len(self.df) >= 10:
             try:
-                obv_recent = self.df['OBV'].tail(10)
-                if len(obv_recent.dropna()) >= 5:
-                    obv_slope = (obv_recent.iloc[-1] - obv_recent.iloc[0]) / len(obv_recent)
-                    price_recent = self.df['close'].tail(10)
-                    price_slope = (price_recent.iloc[-1] - price_recent.iloc[0]) / len(price_recent)
+                obv_recent = self.df['OBV'].tail(10).dropna()
+                price_recent = self.df['close'].tail(10).dropna()
+                
+                if len(obv_recent) >= 5 and len(price_recent) >= 5:
+                    # Use LINEAR REGRESSION for OBV slope (consistent with display)
+                    x_obv = np.arange(len(obv_recent))
+                    y_obv = obv_recent.values.astype(float)
+                    n_obv = len(x_obv)
+                    obv_slope = (n_obv * np.sum(x_obv * y_obv) - np.sum(x_obv) * np.sum(y_obv)) / \
+                               (n_obv * np.sum(x_obv * x_obv) - np.sum(x_obv) ** 2)
+                    
+                    # Use LINEAR REGRESSION for price slope too
+                    x_price = np.arange(len(price_recent))
+                    y_price = price_recent.values.astype(float)
+                    n_price = len(x_price)
+                    price_slope = (n_price * np.sum(x_price * y_price) - np.sum(x_price) * np.sum(y_price)) / \
+                                 (n_price * np.sum(x_price * x_price) - np.sum(x_price) ** 2)
+                    
+                    # Store slope for debugging
+                    result['details']['obv_slope_raw'] = float(obv_slope)
                     
                     # OBV rising = accumulation (smart money buying)
                     # OBV falling = distribution (smart money selling)
-                    if obv_slope > 0:
+                    # Use threshold to avoid noise (slope must be meaningful)
+                    obv_threshold = abs(obv_slope) * 0.1  # 10% of slope magnitude as threshold
+                    
+                    if obv_slope > obv_threshold:
                         result['obv_flow'] = 'accumulation'
                         obv_momentum = 'bullish'
                         # Check for bullish divergence (price down but OBV up)
                         if price_slope < 0:
                             result['obv_flow'] = 'bullish_divergence'
-                    elif obv_slope < 0:
+                    elif obv_slope < -obv_threshold:
                         result['obv_flow'] = 'distribution'
                         obv_momentum = 'bearish'
                         # Check for bearish divergence (price up but OBV down)
@@ -519,7 +538,8 @@ class TechnicalIndicators:
                     else:
                         result['obv_flow'] = 'neutral'
                         obv_momentum = 'neutral'
-            except Exception:
+            except Exception as e:
+                print(f"OBV analysis error: {e}")
                 pass  # OBV analysis failed, continue with neutral
         
         # ========== Combine Indicators: Core (RSI/KDJ/MACD) + Confirmers (ADX/OBV) ==========
