@@ -787,21 +787,66 @@ class MLTradingEngine:
         """
         M2 meta-model: Assess whether this trade is worth taking.
         
+        CRITICAL: Uses fresh Momentum Timing analysis to detect direction conflicts.
+        If momentum timing is opposite to M1's recommendation, M2 penalizes entry quality.
+        
         Args:
-            indicators: Current market indicators (all 43)
+            indicators: Current market indicators (all 43 + momentum_timing)
             m1_confidence: M1 pattern matching confidence (0-1)
             predicted_direction: 'LONG' or 'SHORT' from M1
         
         Returns:
             entry_quality: Score from 0.0 to 1.0, or None if M2 not trained
-                - 0.0-0.3: Poor entry (likely late or unfavorable conditions)
+                - 0.0-0.3: Poor entry (momentum conflict or late entry)
                 - 0.3-0.6: Moderate entry quality
                 - 0.6-1.0: Good entry quality
                 - None: M2 not available yet (need 10+ trades)
         """
-        # If M2 not trained, return None (no filtering)
+        # ========== MOMENTUM TIMING CONFLICT CHECK (Pre-M2) ==========
+        # If fresh momentum analysis shows opposite direction, heavily penalize entry
+        momentum_timing = indicators.get('momentum_timing', {})
+        momentum_dir = momentum_timing.get('momentum_direction', 'neutral')
+        timing_confidence = momentum_timing.get('timing_confidence', 0.5)
+        signals_aligned = momentum_timing.get('signals_aligned', 0)
+        divergence_warning = momentum_timing.get('details', {}).get('divergence_warning')
+        
+        # Detect momentum conflict: M1 direction vs fresh momentum direction
+        momentum_conflict = False
+        conflict_severity = 0.0
+        
+        if predicted_direction == 'LONG' and momentum_dir == 'bearish':
+            momentum_conflict = True
+            # More signals aligned bearish = worse conflict
+            conflict_severity = min(1.0, signals_aligned / 5.0) * timing_confidence
+            print(f"⚠️  MOMENTUM CONFLICT: M1 says LONG but momentum is bearish ({signals_aligned}/5 aligned, confidence {timing_confidence:.0%})")
+        elif predicted_direction == 'SHORT' and momentum_dir == 'bullish':
+            momentum_conflict = True
+            conflict_severity = min(1.0, signals_aligned / 5.0) * timing_confidence
+            print(f"⚠️  MOMENTUM CONFLICT: M1 says SHORT but momentum is bullish ({signals_aligned}/5 aligned, confidence {timing_confidence:.0%})")
+        
+        # Check for OBV divergence warning (smart money opposing trade)
+        if divergence_warning:
+            if predicted_direction == 'LONG' and divergence_warning == 'bearish_divergence':
+                momentum_conflict = True
+                conflict_severity = max(conflict_severity, 0.7)
+                print(f"⚠️  OBV DIVERGENCE: M1 says LONG but smart money is selling")
+            elif predicted_direction == 'SHORT' and divergence_warning == 'bullish_divergence':
+                momentum_conflict = True
+                conflict_severity = max(conflict_severity, 0.7)
+                print(f"⚠️  OBV DIVERGENCE: M1 says SHORT but smart money is buying")
+        
+        # If strong momentum conflict, return low score even without M2 model
+        if momentum_conflict and conflict_severity >= 0.6:
+            penalized_score = max(0.1, 0.5 - (conflict_severity * 0.5))
+            print(f"🚫 M2 Entry blocked by momentum conflict: score={penalized_score:.1%}")
+            return penalized_score
+        
+        # If M2 not trained, return None (no ML filtering, but momentum check still applied)
         if self.m2_model is None:
             print("⚠️  M2 model not available - need 10+ trades to train")
+            # If weak momentum conflict, still return a warning score
+            if momentum_conflict:
+                return 0.4  # Below 50% threshold to trigger advisory
             return None
         
         try:
@@ -809,8 +854,15 @@ class MLTradingEngine:
             features = self.prepare_features(indicators, trade_type=predicted_direction)
             features = features.reshape(1, -1)
             
-            # Get probability of winning trade
+            # Get probability of winning trade from M2 XGBoost
             win_probability = self.m2_model.predict_proba(features)[0][1]
+            
+            # Apply momentum conflict penalty to M2 score
+            if momentum_conflict:
+                penalty = conflict_severity * 0.4  # Up to 40% penalty
+                adjusted_score = max(0.1, win_probability - penalty)
+                print(f"📉 M2 score adjusted for momentum conflict: {win_probability:.1%} → {adjusted_score:.1%}")
+                return float(adjusted_score)
             
             return float(win_probability)
             
