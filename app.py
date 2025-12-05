@@ -1318,35 +1318,77 @@ elif menu == "Risk Calculator":
     st.header("🎯 Position Size Calculator")
     st.markdown("**Calculate the right position size based on your capital and risk tolerance**")
     
-    st.info("💡 **Golden Rule**: Never risk more than 1-2% of your total capital on a single trade!")
+    calc_mode = st.radio(
+        "Calculation Mode",
+        ["📊 Risk-Based (Calculate Position)", "💰 Investment-Based (Enter Amount)"],
+        horizontal=True,
+        help="Risk-Based: Enter risk % to calculate position. Investment-Based: Enter invested amount directly."
+    )
+    
+    st.divider()
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Your Capital & Risk")
+        st.subheader("Your Capital & Settings")
         total_capital = st.number_input(
             "Total Trading Capital ($)", 
-            min_value=100.0, 
+            min_value=10.0, 
             value=10000.0,
             step=100.0,
             help="Your total available trading capital"
         )
         
-        risk_percentage = st.slider(
-            "Risk Per Trade (%)", 
-            min_value=0.5, 
-            max_value=5.0,
-            value=1.0,
-            step=0.25,
-            help="Industry standard: 1-2%. Aggressive: 2-3%. Very risky: 3%+"
+        leverage_options = [1, 2, 3, 5, 10, 20, 30, 50, 75, 100, 125, 200]
+        leverage = st.selectbox(
+            "Leverage (1:X)",
+            options=leverage_options,
+            index=leverage_options.index(20),
+            help="Select your broker leverage. Spot trading = 1x."
         )
         
-        if risk_percentage <= 2.0:
-            st.success(f"✅ {risk_percentage}% is a safe risk level")
-        elif risk_percentage <= 3.0:
-            st.warning(f"⚠️ {risk_percentage}% is aggressive - be careful!")
+        buying_power = total_capital * leverage
+        st.info(f"💪 Buying Power: ${buying_power:,.2f} (Capital × {leverage}x)")
+        
+        if calc_mode == "📊 Risk-Based (Calculate Position)":
+            st.subheader("Risk Settings")
+            risk_percentage = st.slider(
+                "Risk Per Trade (%)", 
+                min_value=0.5, 
+                max_value=5.0,
+                value=1.0,
+                step=0.25,
+                help="Industry standard: 1-2%. Aggressive: 2-3%. Very risky: 3%+"
+            )
+            
+            if risk_percentage <= 2.0:
+                st.success(f"✅ {risk_percentage}% is a safe risk level")
+            elif risk_percentage <= 3.0:
+                st.warning(f"⚠️ {risk_percentage}% is aggressive - be careful!")
+            else:
+                st.error(f"❌ {risk_percentage}% is very risky - you could lose your capital quickly!")
+            
+            invested_amount = None
         else:
-            st.error(f"❌ {risk_percentage}% is very risky - you could lose your capital quickly!")
+            st.subheader("Investment Amount")
+            invested_amount = st.number_input(
+                "Amount Invested in This Trade ($)",
+                min_value=1.0,
+                max_value=buying_power,
+                value=min(100.0, buying_power),
+                step=10.0,
+                help="The actual amount you're investing from your capital"
+            )
+            
+            margin_used_pct = (invested_amount / total_capital) * 100
+            if margin_used_pct <= 10:
+                st.success(f"✅ Using {margin_used_pct:.1f}% of capital - well diversified")
+            elif margin_used_pct <= 30:
+                st.info(f"ℹ️ Using {margin_used_pct:.1f}% of capital")
+            else:
+                st.warning(f"⚠️ Using {margin_used_pct:.1f}% of capital - consider diversifying")
+            
+            risk_percentage = None
     
     with col2:
         st.subheader("Trade Details")
@@ -1400,8 +1442,23 @@ elif menu == "Risk Calculator":
     
     st.divider()
     
-    risk_amount = total_capital * (risk_percentage / 100)
     distance_to_stop = abs(entry_price - stop_loss_price)
+    
+    # Calculate based on mode
+    if calc_mode == "📊 Risk-Based (Calculate Position)":
+        # Risk-Based Mode: Calculate position from risk %
+        risk_amount = total_capital * (risk_percentage / 100)
+        position_size_units = risk_amount / distance_to_stop if distance_to_stop > 0 else 0
+        position_value = position_size_units * entry_price
+        potential_loss = risk_amount
+        actual_risk_pct = risk_percentage
+    else:
+        # Investment-Based Mode: Calculate from invested amount
+        position_value = invested_amount * leverage  # Invested margin × leverage = position value
+        position_size_units = position_value / entry_price
+        potential_loss = position_size_units * distance_to_stop
+        actual_risk_pct = (potential_loss / total_capital) * 100
+        risk_amount = potential_loss
     
     # Validate stop loss and take profit placement
     validation_errors = []
@@ -1427,11 +1484,7 @@ elif menu == "Risk Calculator":
         - Take Profit should be: {'ABOVE' if trade_direction == 'LONG' else 'BELOW'} entry
         """)
     
-    if distance_to_stop > 0:
-        position_size_units = risk_amount / distance_to_stop
-        position_value = position_size_units * entry_price
-        
-        potential_loss = risk_amount
+    if distance_to_stop > 0 and position_size_units > 0:
         
         # Calculate profit based on trade direction
         if trade_direction == "LONG":
@@ -1482,7 +1535,7 @@ elif menu == "Risk Calculator":
         with col1:
             st.subheader("💰 Profit & Loss Scenarios")
             st.write(f"**If Stop Loss is Hit ({format_price(stop_loss_price)}):**")
-            st.error(f"❌ Loss: {format_price(potential_loss)} ({risk_percentage}% of capital)")
+            st.error(f"❌ Loss: {format_price(potential_loss)} ({actual_risk_pct:.2f}% of capital)")
             
             st.write(f"**If Take Profit is Hit ({format_price(take_profit_price)}):**")
             if potential_profit > 0:
@@ -1505,24 +1558,33 @@ elif menu == "Risk Calculator":
             else:
                 st.error("❌ **Poor** risk/reward ratio (less than 1.5:1)\nConsider skipping this trade!")
             
-            if position_value > total_capital:
-                st.error(f"❌ **Warning**: Investment ({format_price(position_value)}) exceeds your capital!")
+            margin_required = position_value / leverage
+            
+            if position_value > buying_power:
+                st.error(f"❌ **Warning**: Position ({format_price(position_value)}) exceeds buying power ({format_price(buying_power)})!")
                 st.write("**Solutions:**")
                 st.write(f"• Move stop loss closer to entry (currently {format_price(distance_to_stop)} away)")
-                st.write(f"• Reduce risk percentage (currently {risk_percentage}%)")
-            elif position_value > total_capital * 0.3:
-                st.warning(f"⚠️ This trade uses {(position_value/total_capital)*100:.1f}% of your capital")
+                st.write(f"• Reduce risk/investment (currently {actual_risk_pct:.1f}% at risk)")
+                st.write(f"• Increase leverage (currently {leverage}x)")
+            elif margin_required > total_capital:
+                st.error(f"❌ **Warning**: Margin required ({format_price(margin_required)}) exceeds your capital!")
+                st.write("**Solutions:**")
+                st.write(f"• Move stop loss closer to entry")
+                st.write(f"• Reduce risk percentage")
+            elif margin_required > total_capital * 0.5:
+                st.warning(f"⚠️ This trade uses {(margin_required/total_capital)*100:.1f}% of your capital as margin")
                 st.write("Consider diversifying across multiple trades")
             else:
-                st.success(f"✅ Trade size is {(position_value/total_capital)*100:.1f}% of capital - well diversified!")
+                st.success(f"✅ Margin: {format_price(margin_required)} ({(margin_required/total_capital)*100:.1f}% of capital)")
         
         st.divider()
         
         st.subheader("📝 Summary")
+        margin_required = position_value / leverage
         st.markdown(f"""
-        **To execute this {trade_direction} trade:**
+        **To execute this {trade_direction} trade at {leverage}x leverage:**
         1. {'Buy' if trade_direction == 'LONG' else 'Sell short'} **{position_size_units:,.4f} units** at **{format_price(entry_price)}**
-        2. Total investment: **{format_price(position_value)}**
+        2. Position value: **{format_price(position_value)}** | Margin required: **{format_price(margin_required)}**
         3. Set stop loss at **{format_price(stop_loss_price)}** (risk: {format_price(potential_loss)})
         4. Set take profit at **{format_price(take_profit_price)}** (potential: {format_price(potential_profit)})
         5. Risk/Reward: **1:{risk_reward_ratio:.1f}**
