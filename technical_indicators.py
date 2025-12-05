@@ -719,6 +719,16 @@ class TechnicalIndicators:
         
         result['estimated_candles'] = round(max(1, estimated_candles), 1)
         
+        # ========== STEP 3: PRICE TARGET ESTIMATION (NEW) ==========
+        # Use ATR × Duration to estimate where price will reach during momentum
+        # Constrain by Support/Resistance levels
+        
+        price_target = self._calculate_price_target(
+            direction=result['momentum_direction'],
+            estimated_candles=result['estimated_candles']
+        )
+        result['price_target'] = price_target
+        
         # ========== Calculate Actual Time from Candles ==========
         estimated_hours = (result['estimated_candles'] * timeframe_minutes) / 60
         result['estimated_hours'] = round(estimated_hours, 1)
@@ -896,6 +906,112 @@ class TechnicalIndicators:
             return 'bearish'
         else:
             return 'neutral'
+    
+    def _calculate_price_target(self, direction, estimated_candles):
+        """
+        Calculate price target based on ATR × Duration, constrained by S/R levels.
+        
+        Args:
+            direction: 'bullish', 'bearish', or 'mixed'
+            estimated_candles: how many candles momentum expected to last
+        
+        Returns dict with:
+            - current_price: current close price
+            - target_price: estimated target
+            - potential_move: price difference
+            - potential_move_pct: percentage move
+            - constrained_by: S/R level that limits target (if any)
+        """
+        result = {
+            'current_price': None,
+            'target_price': None,
+            'potential_move': None,
+            'potential_move_pct': None,
+            'constrained_by': None,
+            'has_data': False
+        }
+        
+        if len(self.df) < 14 or direction in ['mixed', 'reversal_imminent']:
+            return result
+        
+        try:
+            # Get current price
+            current_price = float(self.df['close'].iloc[-1])
+            result['current_price'] = current_price
+            
+            # Get ATR (Average True Range)
+            atr_col = 'ATR' if 'ATR' in self.df.columns else 'ATRr_14' if 'ATRr_14' in self.df.columns else None
+            if atr_col and atr_col in self.df.columns:
+                atr = float(self.df[atr_col].iloc[-1])
+            else:
+                # Calculate ATR manually if not available
+                high = self.df['high'].iloc[-14:]
+                low = self.df['low'].iloc[-14:]
+                close = self.df['close'].iloc[-14:]
+                tr = pd.concat([
+                    high - low,
+                    abs(high - close.shift(1)),
+                    abs(low - close.shift(1))
+                ], axis=1).max(axis=1)
+                atr = tr.mean()
+            
+            if pd.isna(atr) or atr <= 0:
+                return result
+            
+            # Calculate potential move: ATR × candles × factor (0.7 conservative)
+            # Factor < 1 because not every candle moves full ATR in same direction
+            move_factor = 0.7
+            potential_move = atr * estimated_candles * move_factor
+            
+            # Calculate target based on direction
+            if direction == 'bullish':
+                raw_target = current_price + potential_move
+            elif direction == 'bearish':
+                raw_target = current_price - potential_move
+            else:
+                return result
+            
+            # Get S/R levels to constrain target
+            sr_levels = calculate_support_resistance(self.df)
+            constrained_target = raw_target
+            constrained_by = None
+            
+            if sr_levels:
+                if direction == 'bullish':
+                    # Check for resistance between current and target
+                    resistances = [r for r in sr_levels.get('resistance', []) 
+                                   if current_price < r < raw_target]
+                    if resistances:
+                        nearest_resistance = min(resistances)
+                        # Stop 0.3% before resistance
+                        constrained_target = nearest_resistance * 0.997
+                        constrained_by = f"Resistance at {nearest_resistance:.4f}"
+                        
+                elif direction == 'bearish':
+                    # Check for support between current and target
+                    supports = [s for s in sr_levels.get('support', []) 
+                               if raw_target < s < current_price]
+                    if supports:
+                        nearest_support = max(supports)
+                        # Stop 0.3% before support
+                        constrained_target = nearest_support * 1.003
+                        constrained_by = f"Support at {nearest_support:.4f}"
+            
+            # Calculate final values
+            final_move = abs(constrained_target - current_price)
+            move_pct = (final_move / current_price) * 100
+            
+            result['target_price'] = round(constrained_target, 6)
+            result['potential_move'] = round(final_move, 6)
+            result['potential_move_pct'] = round(move_pct, 2)
+            result['constrained_by'] = constrained_by
+            result['has_data'] = True
+            
+            return result
+            
+        except Exception as e:
+            print(f"Price target calculation error: {e}")
+            return result
     
     def _get_historical_zone_duration(self):
         """
