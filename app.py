@@ -736,6 +736,58 @@ if menu == "Market Analysis":
             
             # Advisory message
             st.info(f"💡 **Timing Advisory:** {momentum_timing.get('advisory', 'No timing data')}")
+            
+            # Price Target Display (Step 3: Where momentum is heading)
+            price_target = momentum_timing.get('price_target', {})
+            if price_target and price_target.get('target_price'):
+                st.divider()
+                target_price = price_target.get('target_price', 0)
+                current_price = price_target.get('current_price', 0)
+                move_pct = price_target.get('move_percentage', 0)
+                atr_target = price_target.get('atr_target', 0)
+                sr_constrained = price_target.get('sr_constrained', False)
+                constraint_level = price_target.get('constraint_level')
+                constraint_type = price_target.get('constraint_type', '')
+                
+                # Format the target with direction indicator
+                if momentum_dir == 'bullish':
+                    target_icon = "🎯📈"
+                    target_color = "success"
+                elif momentum_dir == 'bearish':
+                    target_icon = "🎯📉"
+                    target_color = "error"
+                else:
+                    target_icon = "🎯"
+                    target_color = "info"
+                
+                # Build the message
+                target_msg = f"{target_icon} **Predicted Price Target**: {format_price(target_price)} ({move_pct:+.2f}%)"
+                
+                if sr_constrained and constraint_level:
+                    target_msg += f"\n\n⚠️ *Constrained by {constraint_type} at {format_price(constraint_level)}*"
+                    target_msg += f"\n*Original ATR target was {format_price(atr_target)}*"
+                
+                if target_color == "success":
+                    st.success(target_msg)
+                elif target_color == "error":
+                    st.error(target_msg)
+                else:
+                    st.info(target_msg)
+                
+                # Show calculation details in expander
+                with st.expander("📊 Price Target Calculation Details"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Current Price:** {format_price(current_price)}")
+                        st.write(f"**ATR-Based Target:** {format_price(atr_target)}")
+                        st.write(f"**Estimated Candles:** {est_candles:.0f}")
+                    with col2:
+                        st.write(f"**Final Target:** {format_price(target_price)}")
+                        st.write(f"**Expected Move:** {move_pct:+.2f}%")
+                        if sr_constrained:
+                            st.write(f"**Blocked by:** {constraint_type} @ {format_price(constraint_level)}")
+                        else:
+                            st.write("**S/R Check:** Path clear")
         
         st.divider()
         st.subheader("🤖 AI Trading Recommendation")
