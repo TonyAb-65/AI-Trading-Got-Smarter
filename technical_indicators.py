@@ -972,39 +972,50 @@ class TechnicalIndicators:
                 return result
             
             # Get S/R levels to constrain target
-            sr_levels = calculate_support_resistance(self.df)
+            # calculate_support_resistance returns tuple: (support_levels, resistance_levels)
+            sr_result = calculate_support_resistance(self.df)
             constrained_target = raw_target
             constrained_by = None
+            constraint_level = None
+            constraint_type = None
             
-            if sr_levels:
-                if direction == 'bullish':
+            if sr_result and len(sr_result) == 2:
+                support_levels, resistance_levels = sr_result
+                
+                if direction == 'bullish' and resistance_levels:
                     # Check for resistance between current and target
-                    resistances = [r for r in sr_levels.get('resistance', []) 
-                                   if current_price < r < raw_target]
+                    resistances = [r for r in resistance_levels if current_price < r < raw_target]
                     if resistances:
                         nearest_resistance = min(resistances)
                         # Stop 0.3% before resistance
                         constrained_target = nearest_resistance * 0.997
                         constrained_by = f"Resistance at {nearest_resistance:.4f}"
+                        constraint_level = nearest_resistance
+                        constraint_type = "resistance"
                         
-                elif direction == 'bearish':
+                elif direction == 'bearish' and support_levels:
                     # Check for support between current and target
-                    supports = [s for s in sr_levels.get('support', []) 
-                               if raw_target < s < current_price]
+                    supports = [s for s in support_levels if raw_target < s < current_price]
                     if supports:
                         nearest_support = max(supports)
                         # Stop 0.3% before support
                         constrained_target = nearest_support * 1.003
                         constrained_by = f"Support at {nearest_support:.4f}"
+                        constraint_level = nearest_support
+                        constraint_type = "support"
             
             # Calculate final values
             final_move = abs(constrained_target - current_price)
             move_pct = (final_move / current_price) * 100
             
             result['target_price'] = round(constrained_target, 6)
+            result['atr_target'] = round(raw_target, 6)  # Original ATR-based target
             result['potential_move'] = round(final_move, 6)
-            result['potential_move_pct'] = round(move_pct, 2)
+            result['move_percentage'] = round(move_pct, 2) if direction == 'bullish' else round(-move_pct, 2)
             result['constrained_by'] = constrained_by
+            result['sr_constrained'] = constraint_level is not None
+            result['constraint_level'] = round(constraint_level, 6) if constraint_level else None
+            result['constraint_type'] = constraint_type
             result['has_data'] = True
             
             return result
