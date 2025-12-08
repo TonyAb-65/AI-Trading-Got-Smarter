@@ -9,6 +9,10 @@ from telegram_notifier import send_telegram_alert
 import json
 import numpy as np
 
+# Cache to track last momentum direction per position (for Telegram notification filtering)
+# Only notify when direction actually changes (bullish <-> bearish)
+_last_momentum_direction = {}
+
 class PositionMonitor:
     def __init__(self, ml_engine=None):
         self.check_interval_minutes = 15
@@ -145,31 +149,59 @@ class PositionMonitor:
             position.last_obv_slope = current_obv_slope
             position.monitoring_alerts = monitoring_alerts
             
-            # Send Telegram alerts ONLY for momentum timing alerts (EARLY_WARNING, LOW)
-            # Disabled: HIGH, MEDIUM (profile/pattern alerts) - too many notifications
-            sent_severities = set()
-            for severity_level in ['EARLY_WARNING', 'LOW']:
-                # Only send momentum-related alerts (MOMENTUM_SHIFT, MOMENTUM_WARNING)
-                momentum_alerts = [a for a in monitoring_alerts 
-                                   if a.get('severity') == severity_level 
-                                   and a.get('type') in ['MOMENTUM_SHIFT', 'MOMENTUM_WARNING']]
-                if momentum_alerts and severity_level not in sent_severities:
-                    try:
-                        alert = momentum_alerts[0]
-                        send_telegram_alert(
-                            symbol=position.symbol,
-                            position_type=position.trade_type,
-                            entry_price=entry_price,
-                            current_price=current_price,
-                            pnl_percentage=pnl_percentage,
-                            severity=severity_level,
-                            alert_message=alert.get('message', 'Market alert'),
-                            recommendation=alert.get('recommendation', recommendation['action']),
-                            reason=recommendation['reason']
-                        )
-                        sent_severities.add(severity_level)
-                    except Exception as e:
-                        print(f"Telegram notification error ({severity_level}): {e}")
+            # Send Telegram alerts ONLY when momentum DIRECTION changes (bullish <-> bearish)
+            # This prevents notifications for small indicator fluctuations
+            global _last_momentum_direction
+            
+            # Get current momentum direction from timing analysis
+            current_momentum = tech_indicators.get_momentum_timing(60)  # 1H timeframe
+            current_direction = current_momentum.get('momentum_direction', 'neutral') if current_momentum else 'neutral'
+            
+            # Create position key for tracking
+            position_key = f"{position.id}_{position.symbol}"
+            last_direction = _last_momentum_direction.get(position_key, None)
+            
+            # Determine if direction actually changed (bullish <-> bearish)
+            direction_changed = False
+            if last_direction is not None:
+                # Only trigger on actual direction flip (not neutral transitions)
+                if (last_direction == 'bullish' and current_direction == 'bearish') or \
+                   (last_direction == 'bearish' and current_direction == 'bullish'):
+                    direction_changed = True
+                    print(f"📢 Momentum direction changed for {position.symbol}: {last_direction} → {current_direction}")
+            
+            # Update cached direction
+            _last_momentum_direction[position_key] = current_direction
+            
+            # Only send Telegram notification if direction actually changed
+            if direction_changed:
+                momentum_alert_types = [
+                    'MOMENTUM_SHIFT',      # 3+ signals aligned against position
+                    'MOMENTUM_WARNING',    # 2 signals or early opposition
+                    'MOMENTUM_DIVERGENCE', # OBV divergence (smart money conflict)
+                    'MOMENTUM_ADX_CONFLICT' # ADX direction conflict
+                ]
+                for severity_level in ['EARLY_WARNING', 'LOW']:
+                    momentum_alerts_filtered = [a for a in monitoring_alerts 
+                                       if a.get('severity') == severity_level 
+                                       and a.get('type') in momentum_alert_types]
+                    if momentum_alerts_filtered:
+                        try:
+                            alert = momentum_alerts_filtered[0]
+                            send_telegram_alert(
+                                symbol=position.symbol,
+                                position_type=position.trade_type,
+                                entry_price=entry_price,
+                                current_price=current_price,
+                                pnl_percentage=pnl_percentage,
+                                severity=severity_level,
+                                alert_message=f"DIRECTION CHANGED: {last_direction} → {current_direction}",
+                                recommendation=alert.get('recommendation', recommendation['action']),
+                                reason=recommendation['reason']
+                            )
+                            break  # Only send one notification per direction change
+                        except Exception as e:
+                            print(f"Telegram notification error ({severity_level}): {e}")
             
             return {
                 'symbol': position.symbol,
@@ -324,6 +356,13 @@ class PositionMonitor:
             rsi_alignment = momentum.get('rsi_alignment', 'neutral')
             kdj_dynamics = momentum.get('kdj_dynamics', 'neutral')
             
+            # Get confirmation details for ADX and OBV divergence checks
+            details = momentum.get('details', {})
+            adx_confirms = details.get('adx_confirms', False)
+            obv_confirms = details.get('obv_confirms', False)
+            divergence_warning = details.get('divergence_warning')
+            obv_flow = momentum.get('obv_flow', 'neutral')
+            
             if position.trade_type == 'LONG':
                 # Check for bearish signals against LONG position
                 if momentum_dir == 'bearish':
@@ -350,6 +389,55 @@ class PositionMonitor:
                     weak_conflict = True
                     conflict_message = f"📊 Momentum weakening: Early bullish signals ({signals_aligned}/5)"
             
+            # ========== OBV DIVERGENCE WARNING ==========
+            # Smart money divergence is critical - surface even if no direction conflict
+            if divergence_warning:
+                obv_warning_msg = ""
+                if position.trade_type == 'LONG' and divergence_warning == 'bearish_divergence':
+                    obv_warning_msg = f"🔴 OBV DIVERGENCE: Smart money selling while price rising"
+                elif position.trade_type == 'SHORT' and divergence_warning == 'bullish_divergence':
+                    obv_warning_msg = f"🟢 OBV DIVERGENCE: Smart money buying while price falling"
+                
+                if obv_warning_msg:
+                    # OBV divergence = immediate LOW warning, regardless of other signals
+                    alerts.append({
+                        'type': 'MOMENTUM_DIVERGENCE',
+                        'severity': 'LOW',
+                        'message': obv_warning_msg,
+                        'recommendation': 'Smart money flow conflicts with position - watch closely',
+                        'obv_flow': obv_flow,
+                        'divergence_type': divergence_warning
+                    })
+                    print(f"🔄 OBV Divergence Alert: {position.symbol} ({position.trade_type}) - {divergence_warning}")
+            
+            # ========== ADX DIRECTION CONFLICT WARNING ==========
+            # ADX > 25 but DI direction opposes position = potential trend conflict
+            adx_value = details.get('ADX') if details else None
+            di_plus = details.get('di_plus', 0)
+            di_minus = details.get('di_minus', 0)
+            
+            if adx_value and adx_value > 25:
+                adx_direction_conflict = False
+                if position.trade_type == 'LONG' and di_minus > di_plus:
+                    adx_direction_conflict = True
+                    adx_conflict_msg = f"⚠️ ADX Conflict: Strong trend ({adx_value:.0f}) but DI- > DI+ (bearish direction)"
+                elif position.trade_type == 'SHORT' and di_plus > di_minus:
+                    adx_direction_conflict = True
+                    adx_conflict_msg = f"⚠️ ADX Conflict: Strong trend ({adx_value:.0f}) but DI+ > DI- (bullish direction)"
+                
+                if adx_direction_conflict:
+                    alerts.append({
+                        'type': 'MOMENTUM_ADX_CONFLICT',
+                        'severity': 'LOW',
+                        'message': adx_conflict_msg,
+                        'recommendation': 'Trend direction conflicts with position',
+                        'adx_value': adx_value,
+                        'di_plus': di_plus,
+                        'di_minus': di_minus
+                    })
+                    print(f"⚠️ ADX Direction Conflict: {position.symbol} ({position.trade_type}) - ADX={adx_value:.0f}, DI+={di_plus:.1f}, DI-={di_minus:.1f}")
+            
+            # ========== MAIN MOMENTUM CONFLICT ALERTS ==========
             if strong_conflict and signals_aligned >= 3:
                 # Strong momentum conflict (3+ signals aligned against position)
                 alerts.append({
