@@ -495,6 +495,17 @@ class TechnicalIndicators:
         obv_momentum = 'neutral'
         obv_slope = 0.0
         
+        # Check current volume vs average (for whale tracker consistency)
+        volume_ratio = 1.0
+        try:
+            if 'volume' in self.df.columns:
+                current_vol = self.df['volume'].iloc[-1]
+                avg_vol = self.df['volume'].tail(20).mean()
+                if avg_vol > 0:
+                    volume_ratio = current_vol / avg_vol
+        except:
+            pass
+        
         if len(self.df) >= 10:
             try:
                 obv_recent = self.df['OBV'].tail(10).dropna()
@@ -517,11 +528,13 @@ class TechnicalIndicators:
                     
                     # Store slope for debugging
                     result['details']['obv_slope_raw'] = float(obv_slope)
+                    result['details']['volume_ratio'] = round(volume_ratio, 2)
                     
                     # OBV rising = accumulation (smart money buying)
                     # OBV falling = distribution (smart money selling)
-                    # Use threshold to avoid noise (slope must be meaningful)
-                    obv_threshold = abs(obv_slope) * 0.1  # 10% of slope magnitude as threshold
+                    # Use OBV magnitude as threshold to filter noise
+                    obv_magnitude = abs(obv_recent.iloc[-1]) if len(obv_recent) > 0 else 1
+                    obv_threshold = obv_magnitude * 0.001  # 0.1% of OBV magnitude
                     
                     if obv_slope > obv_threshold:
                         result['obv_flow'] = 'accumulation'
@@ -530,11 +543,18 @@ class TechnicalIndicators:
                         if price_slope < 0:
                             result['obv_flow'] = 'bullish_divergence'
                     elif obv_slope < -obv_threshold:
-                        result['obv_flow'] = 'distribution'
-                        obv_momentum = 'bearish'
-                        # Check for bearish divergence (price up but OBV down)
-                        if price_slope > 0:
-                            result['obv_flow'] = 'bearish_divergence'
+                        # CONSISTENCY CHECK: If volume is very high (200%+) AND price rising,
+                        # whale tracker sees accumulation - don't contradict with "distribution"
+                        if volume_ratio >= 2.0 and price_slope > 0:
+                            # High volume + rising price = accumulation taking profit, not selling
+                            result['obv_flow'] = 'neutral'
+                            obv_momentum = 'neutral'
+                        else:
+                            result['obv_flow'] = 'distribution'
+                            obv_momentum = 'bearish'
+                            # Check for bearish divergence (price up but OBV down)
+                            if price_slope > 0:
+                                result['obv_flow'] = 'bearish_divergence'
                     else:
                         result['obv_flow'] = 'neutral'
                         obv_momentum = 'neutral'
@@ -988,10 +1008,14 @@ class TechnicalIndicators:
                     if resistances:
                         nearest_resistance = min(resistances)
                         # Stop 0.3% before resistance
-                        constrained_target = nearest_resistance * 0.997
-                        constrained_by = f"Resistance at {nearest_resistance:.4f}"
-                        constraint_level = nearest_resistance
-                        constraint_type = "resistance"
+                        potential_target = nearest_resistance * 0.997
+                        # CRITICAL: Only constrain if target stays ABOVE current price
+                        if potential_target > current_price:
+                            constrained_target = potential_target
+                            constrained_by = f"Resistance at {nearest_resistance:.4f}"
+                            constraint_level = nearest_resistance
+                            constraint_type = "resistance"
+                        # If buffer pulls target below current, skip constraint (use raw target)
                         
                 elif direction == 'bearish' and support_levels:
                     # Check for support between current and target
@@ -999,19 +1023,27 @@ class TechnicalIndicators:
                     if supports:
                         nearest_support = max(supports)
                         # Stop 0.3% before support
-                        constrained_target = nearest_support * 1.003
-                        constrained_by = f"Support at {nearest_support:.4f}"
-                        constraint_level = nearest_support
-                        constraint_type = "support"
+                        potential_target = nearest_support * 1.003
+                        # CRITICAL: Only constrain if target stays BELOW current price
+                        if potential_target < current_price:
+                            constrained_target = potential_target
+                            constrained_by = f"Support at {nearest_support:.4f}"
+                            constraint_level = nearest_support
+                            constraint_type = "support"
+                        # If buffer pulls target above current, skip constraint (use raw target)
             
-            # Calculate final values
-            final_move = abs(constrained_target - current_price)
-            move_pct = (final_move / current_price) * 100
+            # Calculate final values - use signed percentage based on direction
+            if direction == 'bullish':
+                final_move = constrained_target - current_price
+                move_pct = (final_move / current_price) * 100
+            else:  # bearish
+                final_move = current_price - constrained_target
+                move_pct = -(final_move / current_price) * 100
             
             result['target_price'] = round(constrained_target, 6)
             result['atr_target'] = round(raw_target, 6)  # Original ATR-based target
-            result['potential_move'] = round(final_move, 6)
-            result['move_percentage'] = round(move_pct, 2) if direction == 'bullish' else round(-move_pct, 2)
+            result['potential_move'] = round(abs(final_move), 6)
+            result['move_percentage'] = round(move_pct, 2)
             result['constrained_by'] = constrained_by
             result['sr_constrained'] = constraint_level is not None
             result['constraint_level'] = round(constraint_level, 6) if constraint_level else None
