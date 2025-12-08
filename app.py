@@ -764,8 +764,8 @@ if menu == "Market Analysis":
                 target_msg = f"{target_icon} **Predicted Price Target**: {format_price(target_price)} ({move_pct:+.2f}%)"
                 
                 if sr_constrained and constraint_level:
-                    target_msg += f"\n\n⚠️ *Constrained by {constraint_type} at {format_price(constraint_level)}*"
-                    target_msg += f"\n*Original ATR target was {format_price(atr_target)}*"
+                    target_msg += f"\n\n⚠️ Constrained by {constraint_type} at {format_price(constraint_level)}"
+                    target_msg += f"\n(Original ATR target was {format_price(atr_target)})"
                 
                 if target_color == "success":
                     st.success(target_msg)
