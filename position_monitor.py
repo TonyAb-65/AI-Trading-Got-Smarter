@@ -778,6 +778,14 @@ class PositionMonitor:
             position.is_active = False
             
             from database import Trade
+            
+            # Extract consolidation score from indicators for M2 learning
+            consolidation_score = None
+            if position.indicators_snapshot and isinstance(position.indicators_snapshot, dict):
+                consolidation_data = position.indicators_snapshot.get('consolidation', {})
+                if consolidation_data:
+                    consolidation_score = consolidation_data.get('consolidation_score')
+            
             trade = Trade(
                 symbol=position.symbol,
                 market_type=position.market_type,
@@ -793,6 +801,14 @@ class PositionMonitor:
                 indicators_at_entry=position.indicators_snapshot,
                 m2_entry_quality=position.m2_entry_quality
             )
+            
+            # Set consolidation_score if Trade model has the column
+            if consolidation_score is not None:
+                try:
+                    trade.consolidation_score = consolidation_score
+                    print(f"📊 Consolidation score at entry: {consolidation_score}/100")
+                except AttributeError:
+                    pass  # Column not yet added to model
             
             # Calculate P&L percentage (works even without quantity)
             if position.trade_type == 'LONG':
