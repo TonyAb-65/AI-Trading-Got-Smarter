@@ -28,6 +28,7 @@ class Trade(Base):
     indicators_at_exit = Column(JSON)
     model_confidence = Column(Float)
     m2_entry_quality = Column(Float)
+    consolidation_score = Column(Float)  # For M2 learning - range detection at entry
     notes = Column(Text)
     
     __table_args__ = (
@@ -238,6 +239,15 @@ def ensure_active_position_timeframe_column(engine):
                     "ALTER TABLE trades ADD COLUMN m2_entry_quality FLOAT"
                 ))
             print("✅ m2_entry_quality column added to trades successfully!")
+        
+        # Check trades table for consolidation_score (M2 learning feature)
+        if 'consolidation_score' not in trades_columns:
+            print("⚙️ Auto-migration: Adding consolidation_score column to trades...")
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE trades ADD COLUMN consolidation_score FLOAT"
+                ))
+            print("✅ consolidation_score column added to trades successfully!")
         
         if all(col in columns for col in ['timeframe', 'last_obv_slope', 'monitoring_alerts', 'm2_entry_quality']):
             print("✅ All columns exist - database is up to date")
