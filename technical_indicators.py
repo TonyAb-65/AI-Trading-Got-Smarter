@@ -1399,3 +1399,171 @@ def calculate_support_resistance(df, lookback=20):
     support_levels = sorted(support_levels, reverse=True)[:3]
     
     return support_levels, resistance_levels
+
+
+def analyze_consolidation_state(df, indicators, support_levels, resistance_levels):
+    """
+    Detect when price is stuck in a consolidation range (between trend lines/S/R).
+    Returns advisory information WITHOUT affecting M1 prediction logic.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        indicators: Current indicator values (can be None or empty)
+        support_levels: List of support levels (can be None or empty)
+        resistance_levels: List of resistance levels (can be None or empty)
+    
+    Returns:
+        dict with consolidation analysis:
+            - is_consolidating: bool
+            - consolidation_score: 0-100 (higher = stronger consolidation signal)
+            - channel_upper: upper boundary
+            - channel_lower: lower boundary
+            - breakout_up: level to watch for bullish breakout
+            - breakout_down: level to watch for bearish breakout
+            - advisory: text recommendation
+            - reasons: list of contributing factors
+    """
+    result = {
+        'is_consolidating': False,
+        'consolidation_score': 0,
+        'channel_upper': None,
+        'channel_lower': None,
+        'breakout_up': None,
+        'breakout_down': None,
+        'advisory': '',
+        'reasons': []
+    }
+    
+    # Defensive null checks
+    if df is None or len(df) < 20:
+        return result
+    
+    if indicators is None:
+        indicators = {}
+    
+    if support_levels is None:
+        support_levels = []
+    
+    if resistance_levels is None:
+        resistance_levels = []
+    
+    try:
+        current_price = df.iloc[-1]['close']
+        if current_price is None or current_price <= 0:
+            return result
+    except (IndexError, KeyError):
+        return result
+    
+    score = 0
+    reasons = []
+    
+    # ========== Factor 1: ADX Trend Strength (0-30 points) ==========
+    adx = indicators.get('ADX')
+    if adx is not None:
+        if adx < 15:
+            score += 30
+            reasons.append(f"Very weak trend (ADX {adx:.1f} < 15)")
+        elif adx < 20:
+            score += 20
+            reasons.append(f"Weak trend (ADX {adx:.1f} < 20)")
+        elif adx < 25:
+            score += 10
+            reasons.append(f"Moderate trend (ADX {adx:.1f} < 25)")
+    
+    # ========== Factor 2: Bollinger Band Width (0-25 points) ==========
+    bb_width = indicators.get('BB_width_pct')
+    if bb_width is not None:
+        if bb_width < 2.0:
+            score += 25
+            reasons.append(f"Very narrow range (BB width {bb_width:.1f}%)")
+        elif bb_width < 3.0:
+            score += 15
+            reasons.append(f"Narrow range (BB width {bb_width:.1f}%)")
+        elif bb_width < 4.0:
+            score += 8
+            reasons.append(f"Moderate range (BB width {bb_width:.1f}%)")
+    
+    # ========== Factor 3: Price Position in Range (0-20 points) ==========
+    # Calculate simple regression channel over last 30 candles
+    lookback = min(30, len(df))
+    recent_highs = df['high'].tail(lookback).values
+    recent_lows = df['low'].tail(lookback).values
+    
+    channel_upper = np.max(recent_highs)
+    channel_lower = np.min(recent_lows)
+    channel_range = channel_upper - channel_lower
+    
+    if channel_range > 0:
+        # Calculate how tight the channel is relative to price
+        channel_pct = (channel_range / current_price) * 100
+        if channel_pct < 2.0:
+            score += 20
+            reasons.append(f"Tight channel ({channel_pct:.1f}% range)")
+        elif channel_pct < 4.0:
+            score += 12
+            reasons.append(f"Moderate channel ({channel_pct:.1f}% range)")
+        elif channel_pct < 6.0:
+            score += 5
+            reasons.append(f"Wide channel ({channel_pct:.1f}% range)")
+    
+    result['channel_upper'] = round(channel_upper, 6)
+    result['channel_lower'] = round(channel_lower, 6)
+    
+    # ========== Factor 4: S/R Proximity (0-15 points) ==========
+    # Check if price is stuck between nearby S/R levels
+    nearest_support = support_levels[0] if support_levels else None
+    nearest_resistance = resistance_levels[0] if resistance_levels else None
+    
+    if nearest_support and nearest_resistance:
+        sr_range = nearest_resistance - nearest_support
+        sr_range_pct = (sr_range / current_price) * 100
+        
+        if sr_range_pct < 2.0:
+            score += 15
+            reasons.append(f"Tight S/R range ({sr_range_pct:.1f}%)")
+        elif sr_range_pct < 4.0:
+            score += 10
+            reasons.append(f"Moderate S/R range ({sr_range_pct:.1f}%)")
+        
+        result['breakout_up'] = nearest_resistance
+        result['breakout_down'] = nearest_support
+    else:
+        # Use channel as breakout levels
+        result['breakout_up'] = channel_upper
+        result['breakout_down'] = channel_lower
+    
+    # ========== Factor 5: Recent Price Action (0-10 points) ==========
+    # Check if price has been oscillating (not trending)
+    if lookback >= 10:
+        closes = df['close'].tail(lookback).values
+        # Count direction changes
+        direction_changes = 0
+        for i in range(2, len(closes)):
+            prev_dir = closes[i-1] - closes[i-2]
+            curr_dir = closes[i] - closes[i-1]
+            if prev_dir * curr_dir < 0:  # Direction changed
+                direction_changes += 1
+        
+        oscillation_rate = direction_changes / (lookback - 2)
+        if oscillation_rate > 0.6:
+            score += 10
+            reasons.append(f"High oscillation ({oscillation_rate:.0%} reversals)")
+        elif oscillation_rate > 0.4:
+            score += 5
+            reasons.append(f"Moderate oscillation ({oscillation_rate:.0%} reversals)")
+    
+    # ========== Determine Consolidation Status ==========
+    result['consolidation_score'] = min(score, 100)
+    result['reasons'] = reasons
+    
+    # Consolidation thresholds
+    if score >= 50:
+        result['is_consolidating'] = True
+        if score >= 70:
+            result['advisory'] = "STRONG CONSOLIDATION - Price stuck in tight range. Wait for breakout before entering."
+        else:
+            result['advisory'] = "CONSOLIDATION DETECTED - Price ranging. Consider waiting for breakout confirmation."
+    elif score >= 35:
+        result['advisory'] = "MILD CONSOLIDATION - Trend weakening. Monitor for breakout or continuation."
+    
+    return result
