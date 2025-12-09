@@ -8,7 +8,7 @@ import pytz
 
 from database import init_db, get_session, Trade, ActivePosition, ModelPerformance
 from api_integrations import get_market_data_unified, get_current_price, OKXClient
-from technical_indicators import TechnicalIndicators, calculate_support_resistance
+from technical_indicators import TechnicalIndicators, calculate_support_resistance, analyze_consolidation_state
 from whale_tracker import WhaleTracker
 from ml_engine import MLTradingEngine
 from position_monitor import PositionMonitor
@@ -430,6 +430,10 @@ if menu == "Market Analysis":
                 latest_indicators['support_levels'] = support_levels
                 latest_indicators['resistance_levels'] = resistance_levels
                 
+                # NEW: Consolidation detection (advisory only - does NOT affect M1)
+                consolidation = analyze_consolidation_state(indicators_df, latest_indicators, support_levels, resistance_levels)
+                latest_indicators['consolidation'] = consolidation
+                
                 # Get ML prediction
                 ml_engine = MLTradingEngine()
                 prediction = ml_engine.predict(latest_indicators)
@@ -472,7 +476,8 @@ if menu == "Market Analysis":
                     'patterns': patterns,
                     'whale_data': whale_data,
                     'trend_context': trend_context,
-                    'momentum_timing': momentum_timing  # NEW: Multi-timeframe timing analysis
+                    'momentum_timing': momentum_timing,  # Multi-timeframe timing analysis
+                    'consolidation': consolidation  # NEW: Consolidation advisory
                 }
                 st.session_state['analysis_params'] = current_params
                 st.session_state['last_prediction'] = prediction
@@ -789,28 +794,75 @@ if menu == "Market Analysis":
                         else:
                             st.write("**S/R Check:** Path clear")
         
+        # NEW: Consolidation Advisory Section (does NOT affect M1 prediction)
+        consolidation = data.get('consolidation', {})
+        if consolidation and consolidation.get('consolidation_score', 0) > 30:
+            st.divider()
+            st.subheader("📊 Range/Consolidation Analysis")
+            
+            score = consolidation.get('consolidation_score', 0)
+            is_consolidating = consolidation.get('is_consolidating', False)
+            advisory = consolidation.get('advisory', '')
+            reasons = consolidation.get('reasons', [])
+            breakout_up = consolidation.get('breakout_up')
+            breakout_down = consolidation.get('breakout_down')
+            
+            # Score display with color coding
+            if score >= 70:
+                st.error(f"⚠️ **STRONG CONSOLIDATION** (Score: {score}/100)")
+            elif score >= 50:
+                st.warning(f"⚠️ **CONSOLIDATION DETECTED** (Score: {score}/100)")
+            else:
+                st.info(f"📊 **Mild Range Conditions** (Score: {score}/100)")
+            
+            # Advisory message
+            if advisory:
+                st.write(f"💡 **Advisory:** {advisory}")
+            
+            # Contributing factors
+            if reasons:
+                with st.expander("📋 Contributing Factors"):
+                    for reason in reasons:
+                        st.write(f"• {reason}")
+            
+            # Breakout levels to watch
+            if breakout_up or breakout_down:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if breakout_up:
+                        st.success(f"📈 **Bullish Breakout Above:** {format_price(breakout_up)}")
+                with col2:
+                    if breakout_down:
+                        st.error(f"📉 **Bearish Breakout Below:** {format_price(breakout_down)}")
+        
         st.divider()
         st.subheader("🤖 AI Trading Recommendation")
         
-        if prediction['signal'] == 'LONG':
-            st.success(f"📈 **LONG** - Confidence: {prediction['confidence']:.1f}%")
-        elif prediction['signal'] == 'SHORT':
-            st.error(f"📉 **SHORT** - Confidence: {prediction['confidence']:.1f}%")
+        # Defensive check for prediction data
+        if prediction is None or not isinstance(prediction, dict):
+            st.error("⚠️ Prediction data unavailable. Please re-analyze the market.")
+        elif 'signal' not in prediction or 'confidence' not in prediction:
+            st.warning("⚠️ Incomplete prediction data. Please re-analyze the market.")
         else:
-            st.warning(f"⏸️ **HOLD** - Confidence: {prediction['confidence']:.1f}%")
+            if prediction['signal'] == 'LONG':
+                st.success(f"📈 **LONG** - Confidence: {prediction['confidence']:.1f}%")
+            elif prediction['signal'] == 'SHORT':
+                st.error(f"📉 **SHORT** - Confidence: {prediction['confidence']:.1f}%")
+            else:
+                st.warning(f"⏸️ **HOLD** - Confidence: {prediction['confidence']:.1f}%")
         
-        if prediction['entry_price'] is not None:
+        if prediction and prediction.get('entry_price') is not None:
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Entry Price", format_price(prediction['entry_price']))
             with col2:
-                st.metric("Stop Loss", format_price(prediction['stop_loss']))
+                st.metric("Stop Loss", format_price(prediction.get('stop_loss', 0)))
             with col3:
-                st.metric("Take Profit", format_price(prediction['take_profit']))
-        else:
+                st.metric("Take Profit", format_price(prediction.get('take_profit', 0)))
+        elif prediction:
             st.info(prediction.get('recommendation', 'Insufficient data for prediction. Models not trained yet.'))
         
-        if 'reasons' in prediction and prediction['reasons']:
+        if prediction and prediction.get('reasons'):
             st.write("**Why this recommendation?**")
             for reason in prediction['reasons']:
                 st.write(f"• {reason}")
