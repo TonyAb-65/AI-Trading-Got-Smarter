@@ -1839,7 +1839,7 @@ elif menu == "Performance Analytics":
         show_trade_history = st.checkbox("📋 Show Trade History Details", value=False, key="show_trade_history")
         
         if show_trade_history:
-            for trade in reversed(filtered_trades):
+            for trade in filtered_trades:
                 exit_time_riyadh = convert_to_riyadh_time(trade.exit_time) if trade.exit_time else None
                 exit_time_str = exit_time_riyadh.strftime('%Y-%m-%d %H:%M') if exit_time_riyadh else 'N/A'
                 
