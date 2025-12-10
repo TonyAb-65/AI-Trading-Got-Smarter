@@ -1524,13 +1524,11 @@ def analyze_consolidation_state(df, indicators, support_levels, resistance_level
         elif sr_range_pct < 4.0:
             score += 10
             reasons.append(f"Moderate S/R range ({sr_range_pct:.1f}%)")
-        
-        result['breakout_up'] = nearest_resistance
-        result['breakout_down'] = nearest_support
-    else:
-        # Use channel as breakout levels
-        result['breakout_up'] = channel_upper
-        result['breakout_down'] = channel_lower
+    
+    # Always use STABLE channel boundaries as breakout levels (30-candle high/low)
+    # This prevents the "moving goalpost" effect where breakout levels shift with price
+    result['breakout_up'] = channel_upper
+    result['breakout_down'] = channel_lower
     
     # ========== Factor 5: Recent Price Action (0-10 points) ==========
     # Check if price has been oscillating (not trending)
