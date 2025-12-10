@@ -1701,7 +1701,7 @@ elif menu == "Performance Analytics":
     
     session = get_session()
     
-    trades = session.query(Trade).filter(Trade.exit_price.isnot(None)).all()
+    trades = session.query(Trade).filter(Trade.exit_price.isnot(None)).order_by(Trade.entry_time.desc()).all()
     
     if trades:
         total_trades = len(trades)
