@@ -88,6 +88,47 @@ def format_price(price):
     else:
         return f"${price:,.2f}"
 
+def format_large_number(value):
+    """
+    Format large numbers with K/M/B abbreviations for readability.
+    Examples: 366304090 → "366.3M", 2657559 → "2.66M", 1500 → "1.5K"
+    """
+    if value is None:
+        return "N/A"
+    
+    abs_value = abs(value)
+    sign = "-" if value < 0 else ""
+    
+    if abs_value >= 1_000_000_000:
+        return f"{sign}{abs_value / 1_000_000_000:.2f}B"
+    elif abs_value >= 1_000_000:
+        return f"{sign}{abs_value / 1_000_000:.2f}M"
+    elif abs_value >= 1_000:
+        return f"{sign}{abs_value / 1_000:.2f}K"
+    else:
+        return f"{value:.2f}"
+
+def get_slope_strength(slope_value):
+    """
+    Classify OBV slope strength based on magnitude.
+    Returns (strength_label, emoji) tuple.
+    """
+    if slope_value is None:
+        return "Unknown", "⚪"
+    
+    abs_slope = abs(slope_value)
+    
+    if abs_slope >= 50_000_000:  # 50M+
+        return "Very Strong", "🔥"
+    elif abs_slope >= 10_000_000:  # 10M+
+        return "Strong", "💪"
+    elif abs_slope >= 1_000_000:  # 1M+
+        return "Moderate", "📊"
+    elif abs_slope >= 100_000:  # 100K+
+        return "Weak", "📉"
+    else:
+        return "Very Weak", "💤"
+
 def check_global_alerts():
     """Check all active positions for HIGH severity alerts"""
     try:
@@ -540,8 +581,7 @@ if menu == "Market Analysis":
         with col5:
             obv = latest_indicators.get('OBV')
             if obv is not None:
-                obv_formatted = f"{obv:,.0f}" if abs(obv) > 1000 else f"{obv:.2f}"
-                st.metric("OBV", obv_formatted)
+                st.metric("OBV", format_large_number(obv))
             else:
                 st.metric("OBV", "N/A")
         
@@ -623,16 +663,17 @@ if menu == "Market Analysis":
             obv_ctx = trend_context.get('OBV', {})
             obv_slope = obv_ctx.get('slope', 0.0)
             obv_divergence = obv_ctx.get('divergence', 'none')
+            strength_label, strength_emoji = get_slope_strength(obv_slope)
             
             if obv_divergence == 'bullish':
                 st.write("🟢 **Bullish Divergence** - Accumulating")
-                st.caption(f"Slope: {obv_slope:+.2f}")
+                st.caption(f"Slope: {format_large_number(obv_slope)} | {strength_emoji} {strength_label}")
                 timing_info = get_divergence_timing_info('OBV', timeframe, 'bullish')
                 if timing_info:
                     st.caption(f"⏱️ Resolves in {timing_info['avg_candles']:.1f} candles | {timing_info['success_rate']:.0f}% success")
             elif obv_divergence == 'bearish':
                 st.write("🔴 **Bearish Divergence** - Distributing")
-                st.caption(f"Slope: {obv_slope:+.2f}")
+                st.caption(f"Slope: {format_large_number(obv_slope)} | {strength_emoji} {strength_label}")
                 timing_info = get_divergence_timing_info('OBV', timeframe, 'bearish')
                 if timing_info:
                     st.caption(f"⏱️ Resolves in {timing_info['avg_candles']:.1f} candles | {timing_info['success_rate']:.0f}% success")
@@ -640,7 +681,7 @@ if menu == "Market Analysis":
                 slope_direction = "Rising" if obv_slope > 0.5 else "Falling" if obv_slope < -0.5 else "Flat"
                 slope_color = "🟢" if obv_slope > 0.5 else "🔴" if obv_slope < -0.5 else "🟡"
                 st.write(f"{slope_color} **{slope_direction}**")
-                st.caption(f"Slope: {obv_slope:+.2f}")
+                st.caption(f"Slope: {format_large_number(obv_slope)} | {strength_emoji} {strength_label}")
         
         if market_type == "crypto" and whale_data:
             st.subheader("🐋 Whale & Smart Money Analysis")
