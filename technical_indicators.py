@@ -1565,3 +1565,190 @@ def analyze_consolidation_state(df, indicators, support_levels, resistance_level
         result['advisory'] = "MILD CONSOLIDATION - Trend weakening. Monitor for breakout or continuation."
     
     return result
+
+
+def get_higher_timeframe_trend(symbol, market_type, htf_interval='4H', limit=50):
+    """
+    Fetch and analyze higher timeframe (4H by default) trend for multi-timeframe confirmation.
+    
+    Returns dict with:
+    - trend: 'bullish', 'bearish', or 'neutral'
+    - strength: 0-100 score
+    - confirmation: True if HTF confirms, False if conflicts, None if neutral
+    - details: Dict with RSI, MACD, ADX values
+    
+    Used to filter 1H signals: only take LONG if 4H trend is bullish/neutral,
+    only take SHORT if 4H trend is bearish/neutral.
+    """
+    from api_integrations import get_market_data_unified
+    
+    try:
+        print(f"📊 Fetching {htf_interval} data for multi-timeframe analysis...")
+        df = get_market_data_unified(symbol, market_type, interval=htf_interval, limit=limit)
+        
+        if df is None or len(df) < 20:
+            print(f"⚠️ Insufficient {htf_interval} data for multi-timeframe analysis")
+            return {
+                'trend': 'neutral',
+                'strength': 0,
+                'confirmation': None,
+                'details': {},
+                'available': False
+            }
+        
+        # Calculate key trend indicators on 4H data
+        import pandas_ta as pta
+        
+        # RSI - trend momentum
+        rsi = pta.rsi(df['close'], length=14)
+        rsi_value = rsi.iloc[-1] if rsi is not None and len(rsi) > 0 else 50
+        
+        # MACD - trend direction and momentum
+        macd = pta.macd(df['close'], fast=12, slow=26, signal=9)
+        macd_value = 0
+        macd_hist = 0
+        if macd is not None:
+            macd_value = macd['MACD_12_26_9'].iloc[-1] if 'MACD_12_26_9' in macd.columns else 0
+            macd_hist = macd['MACDh_12_26_9'].iloc[-1] if 'MACDh_12_26_9' in macd.columns else 0
+        
+        # ADX - trend strength
+        adx_result = pta.adx(df['high'], df['low'], df['close'], length=14)
+        adx_value = 20
+        di_plus = 0
+        di_minus = 0
+        if adx_result is not None:
+            adx_value = adx_result['ADX_14'].iloc[-1] if 'ADX_14' in adx_result.columns else 20
+            di_plus = adx_result['DMP_14'].iloc[-1] if 'DMP_14' in adx_result.columns else 0
+            di_minus = adx_result['DMN_14'].iloc[-1] if 'DMN_14' in adx_result.columns else 0
+        
+        # SMA trend
+        sma_20 = pta.sma(df['close'], length=20)
+        sma_50 = pta.sma(df['close'], length=50) if len(df) >= 50 else None
+        
+        current_price = df['close'].iloc[-1]
+        above_sma20 = current_price > sma_20.iloc[-1] if sma_20 is not None and len(sma_20) > 0 else None
+        above_sma50 = current_price > sma_50.iloc[-1] if sma_50 is not None and len(sma_50) > 0 else None
+        
+        # Score bullish/bearish signals
+        bullish_score = 0
+        bearish_score = 0
+        
+        # RSI contribution
+        if rsi_value > 50:
+            bullish_score += min(20, (rsi_value - 50) / 2)
+        elif rsi_value < 50:
+            bearish_score += min(20, (50 - rsi_value) / 2)
+        
+        # MACD contribution
+        if macd_hist > 0:
+            bullish_score += 20
+            if macd_value > 0:
+                bullish_score += 10
+        elif macd_hist < 0:
+            bearish_score += 20
+            if macd_value < 0:
+                bearish_score += 10
+        
+        # ADX/DI contribution (trend direction)
+        if adx_value > 20:  # Strong trend
+            if di_plus > di_minus:
+                bullish_score += 25
+            elif di_minus > di_plus:
+                bearish_score += 25
+        
+        # SMA contribution
+        if above_sma20:
+            bullish_score += 15
+        elif above_sma20 is False:
+            bearish_score += 15
+        
+        if above_sma50:
+            bullish_score += 10
+        elif above_sma50 is False:
+            bearish_score += 10
+        
+        # Determine overall trend
+        total_score = bullish_score + bearish_score
+        if total_score == 0:
+            trend = 'neutral'
+            strength = 0
+        elif bullish_score > bearish_score * 1.5:
+            trend = 'bullish'
+            strength = min(100, bullish_score)
+        elif bearish_score > bullish_score * 1.5:
+            trend = 'bearish'
+            strength = min(100, bearish_score)
+        else:
+            trend = 'neutral'
+            strength = abs(bullish_score - bearish_score)
+        
+        print(f"📈 {htf_interval} Trend: {trend.upper()} (strength: {strength:.0f})")
+        
+        return {
+            'trend': trend,
+            'strength': strength,
+            'confirmation': None,  # Will be set by caller based on signal direction
+            'details': {
+                'rsi': round(rsi_value, 1) if not pd.isna(rsi_value) else 50,
+                'macd': round(macd_value, 4) if not pd.isna(macd_value) else 0,
+                'macd_hist': round(macd_hist, 4) if not pd.isna(macd_hist) else 0,
+                'adx': round(adx_value, 1) if not pd.isna(adx_value) else 20,
+                'di_plus': round(di_plus, 1) if not pd.isna(di_plus) else 0,
+                'di_minus': round(di_minus, 1) if not pd.isna(di_minus) else 0,
+                'above_sma20': above_sma20,
+                'above_sma50': above_sma50,
+                'bullish_score': bullish_score,
+                'bearish_score': bearish_score
+            },
+            'available': True
+        }
+        
+    except Exception as e:
+        print(f"❌ Error in multi-timeframe analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'trend': 'neutral',
+            'strength': 0,
+            'confirmation': None,
+            'details': {},
+            'available': False
+        }
+
+
+def check_mtf_confirmation(htf_trend, signal_direction):
+    """
+    Check if higher timeframe trend confirms the signal direction.
+    
+    Rules:
+    - LONG signal: Confirmed if 4H is bullish or neutral, Conflict if 4H is bearish
+    - SHORT signal: Confirmed if 4H is bearish or neutral, Conflict if 4H is bullish
+    
+    Returns:
+    - 'confirmed': HTF supports the trade direction
+    - 'neutral': HTF is neutral, no strong confirmation or conflict
+    - 'conflict': HTF trend opposes the trade direction (warning)
+    """
+    if htf_trend.get('trend') == 'neutral' or not htf_trend.get('available'):
+        return 'neutral'
+    
+    trend = htf_trend.get('trend', 'neutral')
+    strength = htf_trend.get('strength', 0)
+    
+    if signal_direction == 'LONG':
+        if trend == 'bullish':
+            return 'confirmed'
+        elif trend == 'bearish' and strength > 30:
+            return 'conflict'
+        else:
+            return 'neutral'
+    
+    elif signal_direction == 'SHORT':
+        if trend == 'bearish':
+            return 'confirmed'
+        elif trend == 'bullish' and strength > 30:
+            return 'conflict'
+        else:
+            return 'neutral'
+    
+    return 'neutral'
