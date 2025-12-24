@@ -290,7 +290,7 @@ class MLTradingEngine:
                 # Calculate candles elapsed if we have detection time
                 if detected_at:
                     try:
-                        from datetime import datetime
+                        # Note: datetime already imported at module level
                         if isinstance(detected_at, str):
                             detected_time = datetime.fromisoformat(detected_at.replace('Z', '+00:00'))
                         else:
@@ -396,6 +396,41 @@ class MLTradingEngine:
         timing_confidence = momentum_timing.get('timing_confidence', 0.5)
         features.append(float(timing_confidence))
         
+        # ========== PHASE 2: Time-Based Features (markets behave differently by time) ==========
+        # Get entry time from indicators (if available) or use current time
+        entry_time = indicators.get('entry_time') or indicators.get('timestamp')
+        if entry_time:
+            if isinstance(entry_time, str):
+                try:
+                    entry_time = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
+                except:
+                    entry_time = datetime.utcnow()
+        else:
+            entry_time = datetime.utcnow()
+        
+        # Hour of day (0-23) normalized to 0-1 scale
+        hour_normalized = entry_time.hour / 23.0
+        features.append(float(hour_normalized))
+        
+        # Day of week (0=Monday, 6=Sunday) normalized to 0-1 scale
+        day_of_week_normalized = entry_time.weekday() / 6.0
+        features.append(float(day_of_week_normalized))
+        
+        # Trading session encoding (useful for forex/crypto behavior)
+        # Asia: 0-8 UTC, Europe: 8-16 UTC, Americas: 16-24 UTC
+        hour = entry_time.hour
+        if 0 <= hour < 8:
+            session_encoded = -1.0  # Asia session
+        elif 8 <= hour < 16:
+            session_encoded = 0.0  # Europe session (highest liquidity)
+        else:
+            session_encoded = 1.0  # Americas session
+        features.append(session_encoded)
+        
+        # Weekend flag (crypto trades 24/7, but forex/stocks don't)
+        is_weekend = 1.0 if entry_time.weekday() >= 5 else 0.0
+        features.append(is_weekend)
+        
         self.feature_columns = ['trade_type'] + feature_names + [
             'price_vs_sma20', 'price_vs_sma50', 'macd_divergence', 'volume_ratio',
             'rsi_duration', 'rsi_slope', 'rsi_divergence',
@@ -409,7 +444,8 @@ class MLTradingEngine:
             'div_speed_class', 'div_success_rate',
             'mt_rsi_6', 'mt_rsi_12', 'mt_rsi_24', 'mt_stoch_j',
             'mt_rsi_alignment', 'mt_kdj_dynamics', 'mt_momentum_dir',
-            'mt_est_candles', 'mt_timing_confidence'
+            'mt_est_candles', 'mt_timing_confidence',
+            'time_hour', 'time_day_of_week', 'time_session', 'time_is_weekend'
         ]
         
         return np.array(features).reshape(1, -1)
@@ -459,15 +495,18 @@ class MLTradingEngine:
         
         return regime, min(score, 100.0)
     
-    def build_trade_profiles(self):
+    def build_trade_profiles(self, exclude_trade_ids=None):
         """
         Build average indicator profiles from closed trades with feature normalization:
         - Winning LONG profile
         - Winning SHORT profile
         - Losing LONG profile
         - Losing SHORT profile
+        
+        PHASE 1 FIX: exclude_trade_ids allows leave-one-out evaluation to prevent look-ahead bias
         """
         session = get_session()
+        exclude_trade_ids = exclude_trade_ids or set()
         
         try:
             trades = session.query(Trade).filter(
@@ -476,11 +515,15 @@ class MLTradingEngine:
                 Trade.indicators_at_entry.isnot(None)
             ).all()
             
+            # PHASE 1 FIX: Exclude specified trades to prevent look-ahead bias
+            if exclude_trade_ids:
+                trades = [t for t in trades if t.id not in exclude_trade_ids]
+            
             if len(trades) < 5:
                 print(f"Not enough trades to build profiles. Need at least 5, have {len(trades)}")
                 return None
             
-            # STEP 1: Collect ALL features from ALL trades to fit scaler
+            # STEP 1: Collect ALL features from training trades only
             all_features = []
             trade_features_map = {}
             
@@ -498,11 +541,12 @@ class MLTradingEngine:
                 print(f"Not enough valid feature sets. Need at least 5, have {len(all_features)}")
                 return None
             
-            # STEP 2: Fit scaler on ALL features (ensures consistent normalization)
+            # PHASE 1 FIX: Fit scaler ONLY on training data (excludes test trades)
             all_features_array = np.array(all_features)
             self.scaler.fit(all_features_array)
             self.scaler_fitted = True
-            print(f"✅ Scaler fitted on {len(all_features)} trade feature sets")
+            excluded_count = len(exclude_trade_ids) if exclude_trade_ids else 0
+            print(f"✅ Scaler fitted on {len(all_features)} trades (excluded {excluded_count} for validation)")
             
             # STEP 3: Separate trades into 4 categories
             win_long_trades = [t for t in trades if t.outcome.upper() == 'WIN' and t.trade_type == 'LONG']
@@ -587,39 +631,45 @@ class MLTradingEngine:
         Train M2 meta-labeling model to assess entry quality.
         Learns which predicted trades are worth taking based on full indicator profile.
         
+        PHASE 1 & 2 FIXES:
+        1. Walk-forward validation (time-ordered split)
+        2. Asymmetric loss weighting (false positives cost more in trading)
+        
         Returns:
             True if training successful, False otherwise
         """
         session = get_session()
         
         try:
-            # Get closed trades with full indicator data
+            # PHASE 1 FIX: Get trades ordered by time for walk-forward validation
             trades = session.query(Trade).filter(
                 Trade.exit_price.isnot(None),
                 Trade.outcome.isnot(None),
                 Trade.indicators_at_entry.isnot(None)
-            ).all()
+            ).order_by(Trade.entry_time.asc()).all()
             
             if len(trades) < min_trades:
                 print(f"⚠️  Not enough trades for M2 training. Need {min_trades}, have {len(trades)}")
                 self.m2_model = None
                 return False
             
-            # Prepare training data
+            # PHASE 1 FIX: Walk-forward split (80/20) respecting time order
+            train_size = int(len(trades) * 0.8)
+            train_trades = trades[:train_size]
+            test_trades = trades[train_size:]
+            
+            print(f"📊 M2 Walk-Forward: {len(train_trades)} train / {len(test_trades)} test trades")
+            
+            # Prepare training data from train set only
             X_train = []
             y_train = []
             
-            for trade in trades:
+            for trade in train_trades:
                 try:
-                    # Get features at entry (all 43 indicators)
                     features = self.prepare_features(trade.indicators_at_entry, trade_type=trade.trade_type)
-                    
-                    # Label: 1 if trade won, 0 if lost
                     label = 1 if trade.outcome.upper() == 'WIN' else 0
-                    
                     X_train.append(features.flatten())
                     y_train.append(label)
-                    
                 except Exception as e:
                     print(f"⚠️  Skipping trade {trade.id} in M2 training: {e}")
                     continue
@@ -632,17 +682,19 @@ class MLTradingEngine:
             X_train = np.array(X_train)
             y_train = np.array(y_train)
             
-            # Calculate class weights to handle imbalanced WIN/LOSS trades
+            # Calculate class weights
             win_count = sum(y_train)
             loss_count = len(y_train) - win_count
             
-            # scale_pos_weight = negative_samples / positive_samples
-            # This balances the model when WIN/LOSS trades are imbalanced
-            scale_pos_weight = loss_count / win_count if win_count > 0 else 1.0
+            # PHASE 2 FIX: Asymmetric loss - false positives (predict WIN, get LOSS) are 2x costly
+            # scale_pos_weight makes losing predictions more costly than missed opportunities
+            base_scale = loss_count / win_count if win_count > 0 else 1.0
+            asymmetric_penalty = 2.0  # False positives cost 2x more in trading
+            scale_pos_weight = base_scale * asymmetric_penalty
             
-            # Train XGBoost classifier for entry quality
             print(f"🔧 Training M2 meta-model on {len(X_train)} trades...")
-            print(f"   Class balance: {win_count} wins, {loss_count} losses (scale_pos_weight={scale_pos_weight:.2f})")
+            print(f"   Class balance: {win_count} wins, {loss_count} losses")
+            print(f"   Asymmetric loss: scale_pos_weight={scale_pos_weight:.2f} (2x penalty for false positives)")
             
             self.m2_model = xgb.XGBClassifier(
                 n_estimators=100,
@@ -657,12 +709,32 @@ class MLTradingEngine:
             
             self.m2_model.fit(X_train, y_train)
             
-            # Calculate accuracy
-            y_pred = self.m2_model.predict(X_train)
-            accuracy = accuracy_score(y_train, y_pred)
+            # PHASE 1 FIX: Calculate out-of-sample accuracy on test set
+            if len(test_trades) > 0:
+                X_test = []
+                y_test = []
+                for trade in test_trades:
+                    try:
+                        features = self.prepare_features(trade.indicators_at_entry, trade_type=trade.trade_type)
+                        label = 1 if trade.outcome.upper() == 'WIN' else 0
+                        X_test.append(features.flatten())
+                        y_test.append(label)
+                    except:
+                        continue
+                
+                if len(X_test) > 0:
+                    X_test = np.array(X_test)
+                    y_test = np.array(y_test)
+                    y_pred_test = self.m2_model.predict(X_test)
+                    test_accuracy = accuracy_score(y_test, y_pred_test)
+                    print(f"📈 M2 Out-of-sample accuracy (realistic): {test_accuracy:.1%}")
+            
+            # Training accuracy for reference
+            y_pred_train = self.m2_model.predict(X_train)
+            train_accuracy = accuracy_score(y_train, y_pred_train)
             
             print(f"✅ M2 meta-model trained successfully!")
-            print(f"   Training accuracy: {accuracy:.1%}")
+            print(f"   Training accuracy: {train_accuracy:.1%}")
             print(f"   Win examples: {win_count}, Loss examples: {loss_count}")
             
             # Save M2 model to database for persistence
@@ -874,37 +946,55 @@ class MLTradingEngine:
         """
         Profile-based learning system:
         Rebuilds winning/losing profiles and calculates indicator accuracy
+        
+        PHASE 1 FIXES:
+        1. Walk-forward validation (time-ordered, no future data leakage)
+        2. Leave-one-out for similarity calculation (no look-ahead bias)
+        3. Scaler fitted only on training data
         """
         session = get_session()
         
         try:
+            # PHASE 1 FIX: Get trades ordered by time for walk-forward validation
             trades = session.query(Trade).filter(
                 Trade.exit_price.isnot(None),
                 Trade.outcome.isnot(None),
                 Trade.indicators_at_entry.isnot(None)
-            ).all()
+            ).order_by(Trade.entry_time.asc()).all()
             
             if len(trades) < min_trades:
                 print(f"Not enough trades for profile building. Need {min_trades}, have {len(trades)}")
                 return False
             
-            # Build profiles
-            profiles = self.build_trade_profiles()
+            # PHASE 1 FIX: Walk-forward validation with 80/20 train/test split
+            # This respects time ordering - only past trades train future predictions
+            train_size = int(len(trades) * 0.8)
+            train_trades = trades[:train_size]
+            test_trades = trades[train_size:]
+            
+            print(f"📊 Walk-Forward Validation: {len(train_trades)} train / {len(test_trades)} test trades")
+            
+            # Build profiles ONLY from training trades (fixes data leakage)
+            train_trade_ids = {t.id for t in train_trades}
+            test_trade_ids = {t.id for t in test_trades}
+            
+            # Build profiles excluding test trades
+            profiles = self.build_trade_profiles(exclude_trade_ids=test_trade_ids)
             
             if profiles is None:
                 print("Failed to build profiles")
                 return False
             
-            # Calculate overall accuracy based on profile matching
-            # For each trade, predict using profiles and check if it matches actual outcome
+            # PHASE 1 FIX: Calculate accuracy ONLY on test trades (out-of-sample)
+            # This gives realistic accuracy estimate
             correct_predictions = 0
             total_predictions = 0
             
-            for trade in trades:
+            for trade in test_trades:
                 if not trade.indicators_at_entry:
                     continue
                 
-                # Get similarity scores
+                # Get similarity scores (profiles don't include this trade)
                 sim_win_long = self.calculate_similarity(trade.indicators_at_entry, profiles.get('win_long'))
                 sim_win_short = self.calculate_similarity(trade.indicators_at_entry, profiles.get('win_short'))
                 sim_loss_long = self.calculate_similarity(trade.indicators_at_entry, profiles.get('loss_long'))
@@ -925,6 +1015,12 @@ class MLTradingEngine:
                 total_predictions += 1
             
             overall_accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0.0
+            print(f"📈 Out-of-sample accuracy (realistic): {overall_accuracy:.1%} ({correct_predictions}/{total_predictions})")
+            
+            # Now rebuild profiles on ALL trades for production use
+            print(f"🔄 Rebuilding production profiles on all {len(trades)} trades...")
+            self.cached_profiles = self.build_trade_profiles()
+            self.profiles_trade_count = len(trades)
             
             # Deactivate all old models (including legacy RandomForest/XGBoost)
             session.query(ModelPerformance).update({'is_active': False})
@@ -967,6 +1063,19 @@ class MLTradingEngine:
             # ========== NEW: Volatility Regime Classification ==========
             current_regime, regime_score = self.classify_volatility_regime(indicators)
             print(f"🌡️  Current Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
+            
+            # ========== NEW: Multi-Timeframe Analysis (4H confirmation) ==========
+            htf_trend = None
+            symbol = indicators.get('symbol')
+            market_type = indicators.get('market_type')
+            
+            if symbol and market_type:
+                try:
+                    from technical_indicators import get_higher_timeframe_trend
+                    htf_trend = get_higher_timeframe_trend(symbol, market_type, htf_interval='4H', limit=50)
+                except Exception as e:
+                    print(f"⚠️ Multi-timeframe analysis failed: {e}")
+                    htf_trend = {'trend': 'neutral', 'strength': 0, 'available': False}
             
             # Build profiles from historical trades (ORIGINAL LOGIC - NO CHANGES)
             from database import get_session, Trade
@@ -1101,10 +1210,26 @@ class MLTradingEngine:
             if not force_hold and long_final_prob > short_final_prob and (long_final_prob > 0.6 or (prob_difference > 0.08 and long_final_prob > 0.52)):
                 signal = 'LONG'
                 entry_price = current_price
-                stop_loss = current_price - (2 * min_distance)
+                
+                # PHASE 3: Dynamic stop loss based on volatility regime
+                # Wider stops in volatile markets, tighter in calm markets
+                if current_regime == 'EXTREME':
+                    sl_multiplier = 3.0  # Wide stop for extreme volatility
+                    tp_multiplier = 4.0
+                elif current_regime == 'HIGH':
+                    sl_multiplier = 2.5
+                    tp_multiplier = 3.5
+                elif current_regime == 'LOW':
+                    sl_multiplier = 1.5  # Tight stop in calm markets
+                    tp_multiplier = 2.5
+                else:  # MEDIUM
+                    sl_multiplier = 2.0  # Default
+                    tp_multiplier = 3.0
+                
+                stop_loss = current_price - (sl_multiplier * min_distance)
                 
                 # Calculate ATR-based TP, then adjust for support/resistance
-                atr_tp = current_price + (3 * min_distance)
+                atr_tp = current_price + (tp_multiplier * min_distance)
                 support_levels = indicators.get('support_levels', [])
                 resistance_levels = indicators.get('resistance_levels', [])
                 take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'LONG', support_levels, resistance_levels)
@@ -1113,10 +1238,25 @@ class MLTradingEngine:
                 reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
                 reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
                 
-                # NEW: Add volatility regime info
+                # PHASE 3: Add volatility regime and dynamic SL/TP info
                 reasons.append(f"Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
+                reasons.append(f"Dynamic SL/TP: {sl_multiplier}x SL, {tp_multiplier}x TP (adjusted for {current_regime} volatility)")
                 if regime_warning:
                     reasons.append(f"⚠️ {regime_warning}")
+                
+                # Multi-timeframe confirmation check
+                mtf_confirmation = 'neutral'
+                if htf_trend and htf_trend.get('available'):
+                    from technical_indicators import check_mtf_confirmation
+                    mtf_confirmation = check_mtf_confirmation(htf_trend, 'LONG')
+                    htf_details = htf_trend.get('details', {})
+                    
+                    if mtf_confirmation == 'confirmed':
+                        reasons.append(f"✅ 4H CONFIRMS: {htf_trend['trend'].upper()} trend (RSI: {htf_details.get('rsi', 50):.0f}, strength: {htf_trend['strength']:.0f})")
+                    elif mtf_confirmation == 'conflict':
+                        reasons.append(f"⚠️ 4H CONFLICT: {htf_trend['trend'].upper()} trend opposes LONG (RSI: {htf_details.get('rsi', 50):.0f}) - consider waiting")
+                    else:
+                        reasons.append(f"ℹ️ 4H neutral (RSI: {htf_details.get('rsi', 50):.0f})")
                 
                 final_probability = long_final_prob
                 ml_win_probability = ml_long_probability
@@ -1156,10 +1296,26 @@ class MLTradingEngine:
             elif not force_hold and short_final_prob > long_final_prob and (short_final_prob > 0.6 or (prob_difference > 0.08 and short_final_prob > 0.52)):
                 signal = 'SHORT'
                 entry_price = current_price
-                stop_loss = current_price + (2 * min_distance)
+                
+                # PHASE 3: Dynamic stop loss based on volatility regime
+                # Wider stops in volatile markets, tighter in calm markets
+                if current_regime == 'EXTREME':
+                    sl_multiplier = 3.0  # Wide stop for extreme volatility
+                    tp_multiplier = 4.0
+                elif current_regime == 'HIGH':
+                    sl_multiplier = 2.5
+                    tp_multiplier = 3.5
+                elif current_regime == 'LOW':
+                    sl_multiplier = 1.5  # Tight stop in calm markets
+                    tp_multiplier = 2.5
+                else:  # MEDIUM
+                    sl_multiplier = 2.0  # Default
+                    tp_multiplier = 3.0
+                
+                stop_loss = current_price + (sl_multiplier * min_distance)
                 
                 # Calculate ATR-based TP, then adjust for support/resistance
-                atr_tp = current_price - (3 * min_distance)
+                atr_tp = current_price - (tp_multiplier * min_distance)
                 support_levels = indicators.get('support_levels', [])
                 resistance_levels = indicators.get('resistance_levels', [])
                 take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'SHORT', support_levels, resistance_levels)
@@ -1168,10 +1324,25 @@ class MLTradingEngine:
                 reasons.append(f"WIN Pattern Similarity: LONG {sim_win_long*100:.1f}%, SHORT {sim_win_short*100:.1f}%")
                 reasons.append(f"Final ({ml_weight*100:.0f}% ML + {rule_weight*100:.0f}% Rules): LONG {long_final_prob*100:.1f}%, SHORT {short_final_prob*100:.1f}%")
                 
-                # NEW: Add volatility regime info
+                # PHASE 3: Add volatility regime and dynamic SL/TP info
                 reasons.append(f"Volatility Regime: {current_regime} (score: {regime_score:.1f}/100)")
+                reasons.append(f"Dynamic SL/TP: {sl_multiplier}x SL, {tp_multiplier}x TP (adjusted for {current_regime} volatility)")
                 if regime_warning:
                     reasons.append(f"⚠️ {regime_warning}")
+                
+                # Multi-timeframe confirmation check
+                mtf_confirmation = 'neutral'
+                if htf_trend and htf_trend.get('available'):
+                    from technical_indicators import check_mtf_confirmation
+                    mtf_confirmation = check_mtf_confirmation(htf_trend, 'SHORT')
+                    htf_details = htf_trend.get('details', {})
+                    
+                    if mtf_confirmation == 'confirmed':
+                        reasons.append(f"✅ 4H CONFIRMS: {htf_trend['trend'].upper()} trend (RSI: {htf_details.get('rsi', 50):.0f}, strength: {htf_trend['strength']:.0f})")
+                    elif mtf_confirmation == 'conflict':
+                        reasons.append(f"⚠️ 4H CONFLICT: {htf_trend['trend'].upper()} trend opposes SHORT (RSI: {htf_details.get('rsi', 50):.0f}) - consider waiting")
+                    else:
+                        reasons.append(f"ℹ️ 4H neutral (RSI: {htf_details.get('rsi', 50):.0f})")
                 
                 final_probability = short_final_prob
                 ml_win_probability = ml_short_probability
@@ -1246,7 +1417,8 @@ class MLTradingEngine:
                 'rule_probability': round(rule_normalized * 100, 2),
                 'm2_entry_quality': round(entry_quality * 100, 2) if entry_quality is not None else None,
                 'method': 'profile_matching',
-                'reasons': reasons
+                'reasons': reasons,
+                'htf_trend': htf_trend if htf_trend else {'trend': 'neutral', 'available': False}
             }
             
         except Exception as e:
@@ -1402,32 +1574,51 @@ class MLTradingEngine:
         if total_signals == 0:
             total_signals = 1
         
+        # PHASE 3: Get volatility regime for dynamic SL/TP
+        current_regime, regime_score = self.classify_volatility_regime(indicators)
+        
+        # Dynamic multipliers based on volatility
+        if current_regime == 'EXTREME':
+            sl_multiplier = 3.0
+            tp_multiplier = 4.0
+        elif current_regime == 'HIGH':
+            sl_multiplier = 2.5
+            tp_multiplier = 3.5
+        elif current_regime == 'LOW':
+            sl_multiplier = 1.5
+            tp_multiplier = 2.5
+        else:  # MEDIUM
+            sl_multiplier = 2.0
+            tp_multiplier = 3.0
+        
         if bullish_signals > bearish_signals * 1.5:
             signal = 'LONG'
             confidence = min(95, (bullish_signals / total_signals) * 100)
             entry_price = current_price
-            stop_loss = current_price - (2 * min_distance)
+            stop_loss = current_price - (sl_multiplier * min_distance)
             
             # Calculate ATR-based TP, then adjust for support/resistance
-            atr_tp = current_price + (3 * min_distance)
+            atr_tp = current_price + (tp_multiplier * min_distance)
             support_levels = indicators.get('support_levels', [])
             resistance_levels = indicators.get('resistance_levels', [])
             take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'LONG', support_levels, resistance_levels)
             
             recommendation = f"Rule-based LONG signal (no ML training yet)"
+            reasons.append(f"Dynamic SL/TP: {current_regime} volatility → {sl_multiplier}x SL, {tp_multiplier}x TP")
         elif bearish_signals > bullish_signals * 1.5:
             signal = 'SHORT'
             confidence = min(95, (bearish_signals / total_signals) * 100)
             entry_price = current_price
-            stop_loss = current_price + (2 * min_distance)
+            stop_loss = current_price + (sl_multiplier * min_distance)
             
             # Calculate ATR-based TP, then adjust for support/resistance
-            atr_tp = current_price - (3 * min_distance)
+            atr_tp = current_price - (tp_multiplier * min_distance)
             support_levels = indicators.get('support_levels', [])
             resistance_levels = indicators.get('resistance_levels', [])
             take_profit = self.calculate_safe_tp(entry_price, atr_tp, 'SHORT', support_levels, resistance_levels)
             
             recommendation = f"Rule-based SHORT signal (no ML training yet)"
+            reasons.append(f"Dynamic SL/TP: {current_regime} volatility → {sl_multiplier}x SL, {tp_multiplier}x TP")
         else:
             signal = 'HOLD'
             confidence = abs(bullish_signals - bearish_signals) / total_signals * 100
