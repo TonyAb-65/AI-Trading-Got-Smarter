@@ -475,6 +475,11 @@ if menu == "Market Analysis":
                 consolidation = analyze_consolidation_state(indicators_df, latest_indicators, support_levels, resistance_levels)
                 latest_indicators['consolidation'] = consolidation
                 
+                # Add symbol and market_type for multi-timeframe analysis
+                latest_indicators['symbol'] = symbol
+                latest_indicators['market_type'] = api_market_type
+                latest_indicators['timeframe'] = timeframe
+                
                 # Get ML prediction
                 ml_engine = MLTradingEngine()
                 prediction = ml_engine.predict(latest_indicators)
@@ -1045,6 +1050,11 @@ elif menu == "Trading Signals":
                 support_levels, resistance_levels = calculate_support_resistance(indicators_df)
                 indicators['support_levels'] = support_levels
                 indicators['resistance_levels'] = resistance_levels
+                
+                # Add symbol and market_type for multi-timeframe analysis
+                indicators['symbol'] = symbol
+                indicators['market_type'] = api_market_type
+                indicators['timeframe'] = '1H'
                 
                 ml_engine = MLTradingEngine()
                 prediction = ml_engine.predict(indicators)
