@@ -74,7 +74,10 @@ KNOWN_CRYPTO_BASES = [
     'EOS', 'AAVE', 'MKR', 'COMP', 'SNX', 'YFI', 'SUSHI', 'SAND', 'MANA', 'AXS',
     'ENJ', 'CHZ', 'SHIB', 'APE', 'LDO', 'ARB', 'OP', 'SUI', 'SEI', 'TIA',
     'INJ', 'FET', 'RNDR', 'GRT', 'NEAR', 'FTM', 'HBAR', 'ICP', 'QNT', 'EGLD',
-    'PEPE', 'BONK', 'WIF', 'FLOKI', 'NOT', 'TON', 'WLD', 'JUP', 'PYTH', 'STX'
+    'PEPE', 'BONK', 'WIF', 'FLOKI', 'NOT', 'TON', 'WLD', 'JUP', 'PYTH', 'STX',
+    'DASH', 'ZEC', 'XMR', 'ETC', 'NEO', 'WAVES', 'ZIL', 'ONT', 'IOTA', 'XTZ',
+    'KSM', 'FLOW', 'KAVA', 'CRV', 'BAL', '1INCH', 'DYDX', 'GMX', 'BLUR', 'MAGIC',
+    'APT', 'CFX', 'AGIX', 'OCEAN', 'ROSE', 'CELO', 'RUNE', 'KDA', 'MINA', 'ZEN'
 ]
 
 KNOWN_FOREX_BASES = ['EUR', 'GBP', 'AUD', 'NZD', 'CAD', 'CHF', 'JPY']
