@@ -68,6 +68,72 @@ METALS = [
     'XAU/USD', 'XAG/USD', 'XPT/USD', 'XPD/USD'
 ]
 
+KNOWN_CRYPTO_BASES = [
+    'BTC', 'ETH', 'XRP', 'SOL', 'ADA', 'DOGE', 'MATIC', 'DOT', 'AVAX', 'LINK',
+    'LTC', 'BCH', 'UNI', 'ATOM', 'XLM', 'ALGO', 'VET', 'FIL', 'THETA', 'TRX',
+    'EOS', 'AAVE', 'MKR', 'COMP', 'SNX', 'YFI', 'SUSHI', 'SAND', 'MANA', 'AXS',
+    'ENJ', 'CHZ', 'SHIB', 'APE', 'LDO', 'ARB', 'OP', 'SUI', 'SEI', 'TIA',
+    'INJ', 'FET', 'RNDR', 'GRT', 'NEAR', 'FTM', 'HBAR', 'ICP', 'QNT', 'EGLD',
+    'PEPE', 'BONK', 'WIF', 'FLOKI', 'NOT', 'TON', 'WLD', 'JUP', 'PYTH', 'STX'
+]
+
+KNOWN_FOREX_BASES = ['EUR', 'GBP', 'AUD', 'NZD', 'CAD', 'CHF', 'JPY']
+
+def detect_market_type_from_symbol(symbol):
+    """Detect if a symbol is crypto, forex, or metals based on its pattern."""
+    if not symbol or '/' not in symbol:
+        return None
+    
+    base = symbol.split('/')[0].upper()
+    
+    if base in ['XAU', 'XAG', 'XPT', 'XPD']:
+        return 'metals'
+    elif base in KNOWN_CRYPTO_BASES:
+        return 'crypto'
+    elif base in KNOWN_FOREX_BASES:
+        return 'forex'
+    else:
+        return None
+
+def add_custom_pair_to_list(symbol, detected_type):
+    """Add a custom pair to the appropriate list in session_state."""
+    if not symbol or not detected_type:
+        return None
+    
+    if 'custom_crypto_pairs' not in st.session_state:
+        st.session_state['custom_crypto_pairs'] = []
+    if 'custom_forex_pairs' not in st.session_state:
+        st.session_state['custom_forex_pairs'] = []
+    if 'custom_metals' not in st.session_state:
+        st.session_state['custom_metals'] = []
+    
+    if detected_type == 'crypto':
+        if symbol not in CRYPTO_PAIRS and symbol not in st.session_state['custom_crypto_pairs']:
+            st.session_state['custom_crypto_pairs'].append(symbol)
+            return 'crypto'
+    elif detected_type == 'forex':
+        if symbol not in FOREX_PAIRS and symbol not in st.session_state['custom_forex_pairs']:
+            st.session_state['custom_forex_pairs'].append(symbol)
+            return 'forex'
+    elif detected_type == 'metals':
+        if symbol not in METALS and symbol not in st.session_state['custom_metals']:
+            st.session_state['custom_metals'].append(symbol)
+            return 'metals'
+    return None
+
+def get_extended_pairs(pair_type):
+    """Get the base list plus any custom pairs added during session."""
+    if pair_type == 'crypto':
+        custom = st.session_state.get('custom_crypto_pairs', [])
+        return CRYPTO_PAIRS + custom
+    elif pair_type == 'forex':
+        custom = st.session_state.get('custom_forex_pairs', [])
+        return FOREX_PAIRS + custom
+    elif pair_type == 'metals':
+        custom = st.session_state.get('custom_metals', [])
+        return METALS + custom
+    return []
+
 # Riyadh Timezone (GMT+3)
 RIYADH_TZ = pytz.timezone('Asia/Riyadh')
 
@@ -402,14 +468,17 @@ if menu == "Market Analysis":
     
     with col2:
         if market_type == "crypto":
-            symbol_index = CRYPTO_PAIRS.index(default_symbol) if default_symbol in CRYPTO_PAIRS else 0
-            symbol = st.selectbox("Select Pair", CRYPTO_PAIRS, index=symbol_index, key="market_analysis_symbol")
+            crypto_pairs = get_extended_pairs('crypto')
+            symbol_index = crypto_pairs.index(default_symbol) if default_symbol in crypto_pairs else 0
+            symbol = st.selectbox("Select Pair", crypto_pairs, index=symbol_index, key="market_analysis_symbol")
         elif market_type == "forex":
-            symbol_index = FOREX_PAIRS.index(default_symbol) if default_symbol in FOREX_PAIRS else 0
-            symbol = st.selectbox("Select Pair", FOREX_PAIRS, index=symbol_index, key="market_analysis_symbol")
+            forex_pairs = get_extended_pairs('forex')
+            symbol_index = forex_pairs.index(default_symbol) if default_symbol in forex_pairs else 0
+            symbol = st.selectbox("Select Pair", forex_pairs, index=symbol_index, key="market_analysis_symbol")
         elif market_type == "metals":
-            symbol_index = METALS.index(default_symbol) if default_symbol in METALS else 0
-            symbol = st.selectbox("Select Metal", METALS, index=symbol_index, key="market_analysis_symbol")
+            metals_list = get_extended_pairs('metals')
+            symbol_index = metals_list.index(default_symbol) if default_symbol in metals_list else 0
+            symbol = st.selectbox("Select Metal", metals_list, index=symbol_index, key="market_analysis_symbol")
         else:  # custom
             symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", value=default_symbol, placeholder="BTC/USD", key="market_analysis_symbol").upper()
     
@@ -550,6 +619,14 @@ if menu == "Market Analysis":
                             del st.session_state[key]
                 
                 st.success(f"✅ Analysis complete for {symbol}")
+                
+                # Auto-add custom pair to appropriate list if analyzed via custom search
+                if market_type == "custom":
+                    detected_type = detect_market_type_from_symbol(symbol)
+                    if detected_type:
+                        added_to = add_custom_pair_to_list(symbol, detected_type)
+                        if added_to:
+                            st.info(f"📌 {symbol} added to {added_to.upper()} list for quick access")
     
     # Display stored analysis (persists across tab switches)
     if 'analysis_data' in st.session_state:
@@ -1018,11 +1095,11 @@ elif menu == "Trading Signals":
     
     with col2:
         if market_type == "crypto":
-            symbol = st.selectbox("Select Pair", CRYPTO_PAIRS, key="signal_symbol")
+            symbol = st.selectbox("Select Pair", get_extended_pairs('crypto'), key="signal_symbol")
         elif market_type == "forex":
-            symbol = st.selectbox("Select Pair", FOREX_PAIRS, key="signal_symbol")
+            symbol = st.selectbox("Select Pair", get_extended_pairs('forex'), key="signal_symbol")
         elif market_type == "metals":
-            symbol = st.selectbox("Select Metal", METALS, key="signal_symbol")
+            symbol = st.selectbox("Select Metal", get_extended_pairs('metals'), key="signal_symbol")
         else:  # custom
             symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", placeholder="BTC/USD", key="signal_symbol_custom").upper()
     
@@ -1337,11 +1414,11 @@ elif menu == "Position Tracker":
         with col1:
             market_type = st.selectbox("Market Type", ["crypto", "forex", "metals", "custom"], key="add_market")
             if market_type == "crypto":
-                symbol = st.selectbox("Pair", CRYPTO_PAIRS, key="add_symbol")
+                symbol = st.selectbox("Pair", get_extended_pairs('crypto'), key="add_symbol")
             elif market_type == "forex":
-                symbol = st.selectbox("Pair", FOREX_PAIRS, key="add_symbol")
+                symbol = st.selectbox("Pair", get_extended_pairs('forex'), key="add_symbol")
             elif market_type == "metals":
-                symbol = st.selectbox("Metal", METALS, key="add_symbol")
+                symbol = st.selectbox("Metal", get_extended_pairs('metals'), key="add_symbol")
             else:  # custom
                 symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD)", placeholder="BTC/USD", key="add_symbol_custom").upper()
             
