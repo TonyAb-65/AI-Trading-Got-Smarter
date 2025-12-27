@@ -626,7 +626,11 @@ if menu == "Market Analysis":
                     if detected_type:
                         added_to = add_custom_pair_to_list(symbol, detected_type)
                         if added_to:
-                            st.info(f"📌 {symbol} added to {added_to.upper()} list for quick access")
+                            st.session_state['last_custom_pair_added'] = f"{symbol} → {added_to.upper()}"
+                
+                # Show persistent notification for added pairs
+                if 'last_custom_pair_added' in st.session_state:
+                    st.info(f"📌 {st.session_state['last_custom_pair_added']} list (quick access)")
     
     # Display stored analysis (persists across tab switches)
     if 'analysis_data' in st.session_state:
