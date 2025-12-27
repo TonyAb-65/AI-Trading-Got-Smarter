@@ -624,10 +624,14 @@ if menu == "Market Analysis":
                 st.success(f"✅ Analysis complete for {symbol}")
                 
                 # Auto-add custom pair to appropriate list if analyzed via custom search
+                # Debug: print market_type to console
+                print(f"DEBUG: market_type={market_type}, symbol={symbol}")
                 if market_type == "custom":
                     detected_type = detect_market_type_from_symbol(symbol)
+                    print(f"DEBUG: detected_type={detected_type}")
                     if detected_type:
                         added_to = add_custom_pair_to_list(symbol, detected_type)
+                        print(f"DEBUG: added_to={added_to}")
                         if added_to:
                             st.session_state['last_custom_pair_added'] = f"{symbol} → {added_to.upper()}"
                 
