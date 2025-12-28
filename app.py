@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import os
 import pytz
 
-from database import init_db, get_session, Trade, ActivePosition, ModelPerformance
+from database import init_db, get_session, Trade, ActivePosition, ModelPerformance, CustomPair
 from api_integrations import get_market_data_unified, get_current_price, OKXClient
 from technical_indicators import TechnicalIndicators, calculate_support_resistance, analyze_consolidation_state
 from whale_tracker import WhaleTracker
@@ -99,42 +99,55 @@ def detect_market_type_from_symbol(symbol):
         return None
 
 def add_custom_pair_to_list(symbol, detected_type):
-    """Add a custom pair to the appropriate list in session_state."""
+    """Add a custom pair to the database for permanent persistence."""
     if not symbol or not detected_type:
         return None
     
-    if 'custom_crypto_pairs' not in st.session_state:
-        st.session_state['custom_crypto_pairs'] = []
-    if 'custom_forex_pairs' not in st.session_state:
-        st.session_state['custom_forex_pairs'] = []
-    if 'custom_metals' not in st.session_state:
-        st.session_state['custom_metals'] = []
+    # Check if already in base lists
+    base_lists = {'crypto': CRYPTO_PAIRS, 'forex': FOREX_PAIRS, 'metals': METALS}
+    if symbol in base_lists.get(detected_type, []):
+        return None
     
-    if detected_type == 'crypto':
-        if symbol not in CRYPTO_PAIRS and symbol not in st.session_state['custom_crypto_pairs']:
-            st.session_state['custom_crypto_pairs'].append(symbol)
-            return 'crypto'
-    elif detected_type == 'forex':
-        if symbol not in FOREX_PAIRS and symbol not in st.session_state['custom_forex_pairs']:
-            st.session_state['custom_forex_pairs'].append(symbol)
-            return 'forex'
-    elif detected_type == 'metals':
-        if symbol not in METALS and symbol not in st.session_state['custom_metals']:
-            st.session_state['custom_metals'].append(symbol)
-            return 'metals'
+    # Save to database
+    try:
+        session = get_session()
+        existing = session.query(CustomPair).filter(CustomPair.symbol == symbol).first()
+        if not existing:
+            new_pair = CustomPair(symbol=symbol, market_type=detected_type)
+            session.add(new_pair)
+            session.commit()
+            session.close()
+            return detected_type
+        session.close()
+    except Exception as e:
+        print(f"Error saving custom pair: {e}")
     return None
 
+@st.cache_data(ttl=60)
+def get_custom_pairs_from_db():
+    """Load custom pairs from database (cached for 60 seconds)."""
+    try:
+        session = get_session()
+        pairs = session.query(CustomPair).all()
+        result = {'crypto': [], 'forex': [], 'metals': []}
+        for pair in pairs:
+            if pair.market_type in result:
+                result[pair.market_type].append(pair.symbol)
+        session.close()
+        return result
+    except Exception as e:
+        print(f"Error loading custom pairs: {e}")
+        return {'crypto': [], 'forex': [], 'metals': []}
+
 def get_extended_pairs(pair_type):
-    """Get the base list plus any custom pairs added during session."""
+    """Get the base list plus any custom pairs from database."""
+    custom_pairs = get_custom_pairs_from_db()
     if pair_type == 'crypto':
-        custom = st.session_state.get('custom_crypto_pairs', [])
-        return CRYPTO_PAIRS + custom
+        return CRYPTO_PAIRS + custom_pairs.get('crypto', [])
     elif pair_type == 'forex':
-        custom = st.session_state.get('custom_forex_pairs', [])
-        return FOREX_PAIRS + custom
+        return FOREX_PAIRS + custom_pairs.get('forex', [])
     elif pair_type == 'metals':
-        custom = st.session_state.get('custom_metals', [])
-        return METALS + custom
+        return METALS + custom_pairs.get('metals', [])
     return []
 
 # Riyadh Timezone (GMT+3)
