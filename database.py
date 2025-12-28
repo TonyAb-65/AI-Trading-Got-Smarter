@@ -163,6 +163,14 @@ class MLModel(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     version = Column(Integer, default=1)
 
+class CustomPair(Base):
+    __tablename__ = 'custom_pairs'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, unique=True)
+    market_type = Column(String(20), nullable=False)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
 @st.cache_resource(hash_funcs={str: lambda x: x})
 def get_engine(_database_url=None):
     """
@@ -180,13 +188,14 @@ def get_engine(_database_url=None):
     if database_url.startswith('sqlite'):
         engine = create_engine(database_url, connect_args={'check_same_thread': False})
     else:
-        # PostgreSQL with optimized connection pooling
+        # PostgreSQL with conservative connection pooling (Streamlit Cloud has limited file descriptors)
         engine = create_engine(
             database_url,
             pool_pre_ping=True,          # Test connections before using
-            pool_size=10,                 # Max 10 permanent connections
-            max_overflow=20,              # Allow 20 additional overflow connections
-            pool_recycle=3600,            # Recycle connections after 1 hour
+            pool_size=3,                  # Max 3 permanent connections (reduced from 10)
+            max_overflow=5,               # Allow 5 additional overflow (reduced from 20)
+            pool_recycle=1800,            # Recycle connections every 30 mins (was 1 hour)
+            pool_timeout=10,              # Wait max 10 seconds for a connection
             echo=False                    # Disable SQL logging for performance
         )
     
@@ -346,3 +355,23 @@ def get_session():
     """
     SessionFactory = _get_session_factory()
     return SessionFactory()
+
+from contextlib import contextmanager
+
+@contextmanager
+def get_db_session():
+    """Context manager for database sessions - ensures proper cleanup.
+    
+    Usage:
+        with get_db_session() as session:
+            trades = session.query(Trade).all()
+    """
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
