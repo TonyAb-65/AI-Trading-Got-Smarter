@@ -168,7 +168,9 @@ class MLTradingEngine:
             'RSI', 'MACD', 'MACD_hist', 'Stoch_K', 'Stoch_D',
             'MFI', 'CCI', 'ADX', 'DI_plus', 'DI_minus',
             'current_price', 'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
-            'BB_upper', 'BB_middle', 'BB_lower', 'ATR', 'volume', 'Volume_SMA'
+            'BB_upper', 'BB_middle', 'BB_lower', 'ATR', 'volume', 'Volume_SMA',
+            # NEW: 3 Additional Indicators for Improved Profiling (46 total)
+            'Supertrend_direction', 'Williams_R', 'CMF'
         ]
         
         # Add trade direction as first feature (1.0 for LONG, -1.0 for SHORT, 0.0 for unknown)
