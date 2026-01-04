@@ -154,6 +154,30 @@ class TechnicalIndicators:
         # ATR as percentage of price (normalized volatility)
         df['ATR_pct_price'] = (df['ATR'] / df['close']) * 100
         
+        # ========== NEW: 3 Additional Indicators for Improved Profiling ==========
+        
+        # 1. Supertrend - Clear trend direction signal
+        # Uses ATR to create dynamic support/resistance with trend direction
+        supertrend = ta.supertrend(df['high'], df['low'], df['close'], length=10, multiplier=3.0)
+        if supertrend is not None and not supertrend.empty:
+            # Get the Supertrend line and direction
+            st_cols = [col for col in supertrend.columns if 'SUPERT' in col and 'd' not in col.lower()]
+            std_cols = [col for col in supertrend.columns if 'SUPERTd' in col]
+            if st_cols:
+                df['Supertrend'] = supertrend[st_cols[0]]
+            if std_cols:
+                # Direction: 1 = uptrend (bullish), -1 = downtrend (bearish)
+                df['Supertrend_direction'] = supertrend[std_cols[0]]
+        
+        # 2. Williams %R - Fast overbought/oversold oscillator
+        # Similar to Stochastic but inverted: -80 to -100 = oversold, -20 to 0 = overbought
+        df['Williams_R'] = ta.willr(df['high'], df['low'], df['close'], length=14)
+        
+        # 3. Chaikin Money Flow (CMF) - Volume-weighted momentum
+        # Shows if "smart money" is accumulating (+) or distributing (-)
+        # Range: -1 to +1, above 0 = bullish, below 0 = bearish
+        df['CMF'] = ta.cmf(df['high'], df['low'], df['close'], df['volume'], length=20)
+        
         self.df = df
         return df
     
@@ -200,7 +224,12 @@ class TechnicalIndicators:
             'variance_14': latest.get('variance_14'),
             'variance_50': latest.get('variance_50'),
             'wick_to_body_ratio': latest.get('wick_to_body_ratio'),
-            'ATR_pct_price': latest.get('ATR_pct_price')
+            'ATR_pct_price': latest.get('ATR_pct_price'),
+            # NEW: 3 Additional Indicators for Improved Profiling
+            'Supertrend': latest.get('Supertrend'),
+            'Supertrend_direction': latest.get('Supertrend_direction'),
+            'Williams_R': latest.get('Williams_R'),
+            'CMF': latest.get('CMF')
         }
         
         return {k: float(v) if pd.notna(v) else None for k, v in indicators.items()}
