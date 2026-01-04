@@ -272,10 +272,6 @@ def check_api_keys():
             """)
         return False
     
-    st.success("✅ Twelve Data API key configured - All markets available!")
-    if not okx_key:
-        st.info("💡 Optional: Add OKX_API_KEY for orderbook data and whale tracking on crypto")
-    
     return True
 
 def convert_to_heikin_ashi(df):
@@ -308,7 +304,7 @@ def convert_to_heikin_ashi(df):
     
     return ha_df
 
-def plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels):
+def plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels, timeframe='1H'):
     # Convert to Heikin-Ashi candles for clearer trend visualization
     ha_df = convert_to_heikin_ashi(df)
     
@@ -317,7 +313,7 @@ def plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance
         shared_xaxes=True,
         vertical_spacing=0.03,
         row_heights=[0.5, 0.15, 0.15, 0.15],
-        subplot_titles=(f'{symbol} Price Action (Heikin-Ashi)', 'RSI', 'MACD', 'Volume')
+        subplot_titles=(f'{symbol} {timeframe} Price Action (Heikin-Ashi)', 'RSI', 'MACD', 'Volume')
     )
     
     fig.add_trace(
@@ -688,7 +684,7 @@ if menu == "Market Analysis":
                 st.metric("OBV", "N/A")
         
         st.plotly_chart(
-            plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels),
+            plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance_levels, timeframe),
             use_container_width=True
         )
         
