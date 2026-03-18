@@ -433,6 +433,49 @@ class MLTradingEngine:
         is_weekend = 1.0 if entry_time.weekday() >= 5 else 0.0
         features.append(is_weekend)
         
+        # ========== NEW: 4 Advanced Indicator Features ==========
+        
+        # --- Fibonacci Retracements ---
+        fib_direction    = indicators.get('fib_direction', 0.0) or 0.0
+        fib_distance_pct = indicators.get('fib_distance_pct', 5.0) or 5.0
+        at_fib_zone      = indicators.get('at_fib_zone', 0.0) or 0.0
+        # Which fib zone are we in? Encode nearest level as a ratio 0-1 (0%→0, 100%→1)
+        fib_nearest = indicators.get('fib_nearest_level')
+        fib_swing_high = indicators.get('fib_swing_high')
+        fib_swing_low  = indicators.get('fib_swing_low')
+        if fib_swing_high and fib_swing_low and fib_swing_high != fib_swing_low and fib_nearest is not None:
+            fib_zone_pct = (fib_nearest - fib_swing_low) / (fib_swing_high - fib_swing_low)
+        else:
+            fib_zone_pct = 0.5
+        features.append(float(fib_direction))
+        features.append(float(fib_distance_pct))
+        features.append(float(at_fib_zone))
+        features.append(float(fib_zone_pct))
+        
+        # --- Anchored VWAP ---
+        price_above_vwap  = indicators.get('price_above_vwap', 0.5) or 0.5
+        vwap_distance_pct = indicators.get('vwap_distance_pct', 0.0) or 0.0
+        vwap_anchor_type  = indicators.get('vwap_anchor_type', 0.0) or 0.0
+        features.append(float(price_above_vwap))
+        features.append(float(vwap_distance_pct))
+        features.append(float(vwap_anchor_type))
+        
+        # --- Liquidity Sweep ---
+        liq_sweep_type     = indicators.get('liq_sweep_type', 0.0) or 0.0
+        liq_sweep_ago      = indicators.get('liq_sweep_candles_ago', 0.0) or 0.0
+        liq_sweep_strength = indicators.get('liq_sweep_strength', 0.0) or 0.0
+        features.append(float(liq_sweep_type))
+        features.append(float(liq_sweep_ago))
+        features.append(float(liq_sweep_strength))
+        
+        # --- Volume Profile ---
+        vp_poc_distance = indicators.get('vp_poc_distance_pct', 0.0) or 0.0
+        vp_in_value     = indicators.get('vp_in_value_area', 0.5) or 0.5
+        vp_above_poc    = indicators.get('vp_price_above_poc', 0.5) or 0.5
+        features.append(float(vp_poc_distance))
+        features.append(float(vp_in_value))
+        features.append(float(vp_above_poc))
+        
         self.feature_columns = ['trade_type'] + feature_names + [
             'price_vs_sma20', 'price_vs_sma50', 'macd_divergence', 'volume_ratio',
             'rsi_duration', 'rsi_slope', 'rsi_divergence',
@@ -447,7 +490,11 @@ class MLTradingEngine:
             'mt_rsi_6', 'mt_rsi_12', 'mt_rsi_24', 'mt_stoch_j',
             'mt_rsi_alignment', 'mt_kdj_dynamics', 'mt_momentum_dir',
             'mt_est_candles', 'mt_timing_confidence',
-            'time_hour', 'time_day_of_week', 'time_session', 'time_is_weekend'
+            'time_hour', 'time_day_of_week', 'time_session', 'time_is_weekend',
+            'fib_direction', 'fib_distance_pct', 'at_fib_zone', 'fib_zone_pct',
+            'price_above_vwap', 'vwap_distance_pct', 'vwap_anchor_type',
+            'liq_sweep_type', 'liq_sweep_candles_ago', 'liq_sweep_strength',
+            'vp_poc_distance_pct', 'vp_in_value_area', 'vp_price_above_poc',
         ]
         
         return np.array(features).reshape(1, -1)
