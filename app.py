@@ -974,6 +974,130 @@ if menu == "Market Analysis":
                     if breakout_down:
                         st.error(f"📉 **Bearish Breakout Below:** {format_price(breakout_down)}")
         
+        # ===== NEW: 4 Advanced Indicators Section =====
+        fib_data = {k: latest_indicators.get(k) for k in [
+            'fib_swing_high','fib_swing_low','fib_0','fib_236','fib_382',
+            'fib_50','fib_618','fib_786','fib_100',
+            'fib_direction','fib_nearest_level','fib_nearest_label','fib_distance_pct','at_fib_zone'
+        ]}
+        vwap_data = {k: latest_indicators.get(k) for k in [
+            'anchored_vwap','vwap_distance_pct','price_above_vwap','vwap_candles_anchored'
+        ]}
+        liq_data = {k: latest_indicators.get(k) for k in [
+            'liq_sweep_type','liq_sweep_candles_ago','liq_sweep_strength','liq_ref_high','liq_ref_low'
+        ]}
+        vp_data = {k: latest_indicators.get(k) for k in [
+            'vp_poc','vp_vah','vp_val','vp_poc_distance_pct','vp_in_value_area','vp_price_above_poc'
+        ]}
+        
+        has_advanced = any(v is not None for v in list(fib_data.values()) + list(vwap_data.values()))
+        if has_advanced:
+            st.divider()
+            st.subheader("📐 Advanced Indicators")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # --- Fibonacci Retracements ---
+                st.write("**📏 Fibonacci Retracements**")
+                fib_dir = fib_data.get('fib_direction')
+                fib_dir_label = "Uptrend" if fib_dir and fib_dir > 0 else "Downtrend"
+                fib_dir_icon  = "📈" if fib_dir and fib_dir > 0 else "📉"
+                st.caption(f"{fib_dir_icon} Trend: {fib_dir_label}")
+                
+                swing_high = fib_data.get('fib_swing_high')
+                swing_low  = fib_data.get('fib_swing_low')
+                if swing_high and swing_low:
+                    st.caption(f"Swing High: {format_price(swing_high)} | Swing Low: {format_price(swing_low)}")
+                
+                fib_levels = [
+                    ('0%',    'fib_0'),
+                    ('23.6%', 'fib_236'),
+                    ('38.2%', 'fib_382'),
+                    ('50%',   'fib_50'),
+                    ('61.8%', 'fib_618'),
+                    ('78.6%', 'fib_786'),
+                    ('100%',  'fib_100'),
+                ]
+                nearest_lbl = fib_data.get('fib_nearest_label', '')
+                for label, key in fib_levels:
+                    val = fib_data.get(key)
+                    if val is not None:
+                        marker = " ← price here" if label == nearest_lbl else ""
+                        icon   = "🔵" if label == nearest_lbl else "⚪"
+                        st.write(f"{icon} **{label}** — {format_price(val)}{marker}")
+                
+                dist = fib_data.get('fib_distance_pct')
+                at_zone = fib_data.get('at_fib_zone')
+                if dist is not None:
+                    zone_status = "✅ At Fib Zone" if at_zone else f"Distance: {dist:.2f}% from nearest level"
+                    st.caption(zone_status)
+                
+                st.write("")
+                # --- Anchored VWAP ---
+                st.write("**📊 Anchored VWAP**")
+                vwap = vwap_data.get('anchored_vwap')
+                vwap_dist = vwap_data.get('vwap_distance_pct')
+                above_vwap = vwap_data.get('price_above_vwap')
+                candles_anchored = vwap_data.get('vwap_candles_anchored')
+                if vwap is not None:
+                    vwap_icon  = "🟢" if above_vwap else "🔴"
+                    vwap_label = "Above VWAP (bullish)" if above_vwap else "Below VWAP (bearish)"
+                    st.write(f"{vwap_icon} **VWAP:** {format_price(vwap)}")
+                    st.write(f"{vwap_icon} {vwap_label}")
+                    if vwap_dist is not None:
+                        st.caption(f"Price is {abs(vwap_dist):.2f}% {'above' if vwap_dist > 0 else 'below'} VWAP")
+                    if candles_anchored:
+                        st.caption(f"Anchored over last {int(candles_anchored)} candles")
+                else:
+                    st.caption("Insufficient data")
+            
+            with col2:
+                # --- Liquidity Sweep ---
+                st.write("**🌊 Liquidity Sweep**")
+                sweep_type     = liq_data.get('liq_sweep_type', 0.0) or 0.0
+                sweep_ago      = liq_data.get('liq_sweep_candles_ago', 0.0) or 0.0
+                sweep_strength = liq_data.get('liq_sweep_strength', 0.0) or 0.0
+                ref_high       = liq_data.get('liq_ref_high')
+                ref_low        = liq_data.get('liq_ref_low')
+                
+                if ref_high and ref_low:
+                    st.caption(f"Reference High: {format_price(ref_high)} | Low: {format_price(ref_low)}")
+                
+                if sweep_type == 1.0:
+                    st.error(f"🔴 **HIGH SWEEP** — Bearish signal (price grabbed stops above)")
+                    st.caption(f"Occurred {int(sweep_ago)} candle(s) ago | Strength: {sweep_strength*100:.0f}%")
+                    st.caption("📌 Interpretation: Smart money hunted stops above recent highs → watch for drop")
+                elif sweep_type == -1.0:
+                    st.success(f"🟢 **LOW SWEEP** — Bullish signal (price grabbed stops below)")
+                    st.caption(f"Occurred {int(sweep_ago)} candle(s) ago | Strength: {sweep_strength*100:.0f}%")
+                    st.caption("📌 Interpretation: Smart money hunted stops below recent lows → watch for bounce")
+                else:
+                    st.info("⚪ No liquidity sweep detected in last 5 candles")
+                
+                st.write("")
+                # --- Volume Profile ---
+                st.write("**📦 Volume Profile**")
+                poc = vp_data.get('vp_poc')
+                vah = vp_data.get('vp_vah')
+                val = vp_data.get('vp_val')
+                poc_dist   = vp_data.get('vp_poc_distance_pct')
+                in_va      = vp_data.get('vp_in_value_area')
+                above_poc  = vp_data.get('vp_price_above_poc')
+                
+                if poc is not None:
+                    poc_icon = "🟢" if above_poc else "🔴"
+                    st.write(f"**POC** (most traded): {format_price(poc)}")
+                    st.write(f"**VAH** (value area high): {format_price(vah)}")
+                    st.write(f"**VAL** (value area low): {format_price(val)}")
+                    if poc_dist is not None:
+                        st.write(f"{poc_icon} Price is {abs(poc_dist):.2f}% {'above' if poc_dist > 0 else 'below'} POC")
+                    if in_va:
+                        st.caption("✅ Price is inside Value Area (fair value zone)")
+                    else:
+                        st.caption("⚠️ Price is outside Value Area (extended — expect mean-reversion)")
+                else:
+                    st.caption("Insufficient data")
+        
         st.divider()
         st.subheader("🤖 AI Trading Recommendation")
         
