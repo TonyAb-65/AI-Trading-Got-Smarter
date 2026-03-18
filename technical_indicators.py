@@ -7,6 +7,10 @@ class TechnicalIndicators:
         self.df = df.copy()
         self.df = self.df.sort_values('timestamp').reset_index(drop=True)
         self.data_quality_issues = []
+        self._fib_data = {}
+        self._vwap_data = {}
+        self._liquidity_sweep_data = {}
+        self._volume_profile_data = {}
         self._validate_data()
         
     def _validate_data(self):
@@ -178,8 +182,263 @@ class TechnicalIndicators:
         # Range: -1 to +1, above 0 = bullish, below 0 = bearish
         df['CMF'] = ta.cmf(df['high'], df['low'], df['close'], df['volume'], length=20)
         
+        # ========== NEW: 4 Advanced Indicators ==========
+        # Store results as instance variables (they return multi-value dicts)
+        self._fib_data = self._calculate_fibonacci(df)
+        self._vwap_data = self._calculate_anchored_vwap(df)
+        self._liquidity_sweep_data = self._calculate_liquidity_sweep(df)
+        self._volume_profile_data = self._calculate_volume_profile(df)
+        
         self.df = df
         return df
+    
+    def _calculate_fibonacci(self, df):
+        """
+        Calculate Fibonacci retracement levels from the most recent swing high/low.
+        Identifies key price levels where reversals are likely (23.6%, 38.2%, 50%, 61.8%, 78.6%).
+        """
+        if len(df) < 10:
+            return {}
+        lookback = min(50, len(df))
+        recent = df.tail(lookback).reset_index(drop=True)
+        
+        swing_high = recent['high'].max()
+        swing_low = recent['low'].min()
+        high_idx = recent['high'].idxmax()
+        low_idx = recent['low'].idxmin()
+        
+        price_range = swing_high - swing_low
+        if price_range == 0:
+            return {}
+        
+        current_price = df.iloc[-1]['close']
+        
+        # Uptrend: high came after low → retracement goes from high downward
+        uptrend = high_idx > low_idx
+        if uptrend:
+            fib_0   = swing_high
+            fib_236 = swing_high - 0.236 * price_range
+            fib_382 = swing_high - 0.382 * price_range
+            fib_50  = swing_high - 0.500 * price_range
+            fib_618 = swing_high - 0.618 * price_range
+            fib_786 = swing_high - 0.786 * price_range
+            fib_100 = swing_low
+        else:
+            # Downtrend: low came after high → retracement goes from low upward
+            fib_0   = swing_low
+            fib_236 = swing_low + 0.236 * price_range
+            fib_382 = swing_low + 0.382 * price_range
+            fib_50  = swing_low + 0.500 * price_range
+            fib_618 = swing_low + 0.618 * price_range
+            fib_786 = swing_low + 0.786 * price_range
+            fib_100 = swing_high
+        
+        all_levels = {
+            'fib_0': fib_0, 'fib_236': fib_236, 'fib_382': fib_382,
+            'fib_50': fib_50, 'fib_618': fib_618, 'fib_786': fib_786, 'fib_100': fib_100
+        }
+        
+        nearest_key = min(all_levels.keys(), key=lambda k: abs(all_levels[k] - current_price))
+        nearest_price = all_levels[nearest_key]
+        fib_distance_pct = abs(current_price - nearest_price) / current_price * 100
+        at_fib_zone = 1.0 if fib_distance_pct < 0.5 else 0.0
+        
+        label_map = {
+            'fib_0': '0%', 'fib_236': '23.6%', 'fib_382': '38.2%',
+            'fib_50': '50%', 'fib_618': '61.8%', 'fib_786': '78.6%', 'fib_100': '100%'
+        }
+        
+        return {
+            'fib_swing_high': float(swing_high),
+            'fib_swing_low': float(swing_low),
+            'fib_0': float(fib_0),
+            'fib_236': float(fib_236),
+            'fib_382': float(fib_382),
+            'fib_50': float(fib_50),
+            'fib_618': float(fib_618),
+            'fib_786': float(fib_786),
+            'fib_100': float(fib_100),
+            'fib_direction': 1.0 if uptrend else -1.0,
+            'fib_nearest_level': float(nearest_price),
+            'fib_nearest_label': label_map[nearest_key],
+            'fib_distance_pct': float(fib_distance_pct),
+            'at_fib_zone': float(at_fib_zone),
+        }
+    
+    def _calculate_anchored_vwap(self, df):
+        """
+        Calculate VWAP anchored from the most recent significant swing point.
+        Institutional traders use VWAP as fair value — price above = bullish, below = bearish.
+        """
+        if len(df) < 5:
+            return {}
+        lookback = min(50, len(df))
+        recent = df.tail(lookback).reset_index(drop=True)
+        
+        swing_high_idx = recent['high'].idxmax()
+        swing_low_idx = recent['low'].idxmin()
+        last_idx = len(recent) - 1
+        
+        # Anchor from the most recent major swing point
+        dist_to_high = last_idx - swing_high_idx
+        dist_to_low  = last_idx - swing_low_idx
+        
+        if dist_to_high <= dist_to_low:
+            anchor_idx  = swing_high_idx
+            anchor_type = 'high'
+        else:
+            anchor_idx  = swing_low_idx
+            anchor_type = 'low'
+        
+        anchored = recent.iloc[anchor_idx:].copy()
+        if len(anchored) == 0:
+            return {}
+        
+        typical_price = (anchored['high'] + anchored['low'] + anchored['close']) / 3
+        cum_tpv    = (typical_price * anchored['volume']).cumsum()
+        cum_vol    = anchored['volume'].cumsum()
+        vwap_series = cum_tpv / (cum_vol + 1e-9)
+        
+        current_vwap  = float(vwap_series.iloc[-1])
+        current_price = float(df.iloc[-1]['close'])
+        
+        if current_vwap == 0:
+            return {}
+        
+        vwap_distance_pct = (current_price - current_vwap) / current_vwap * 100
+        price_above_vwap  = 1.0 if current_price > current_vwap else 0.0
+        
+        return {
+            'anchored_vwap': current_vwap,
+            'vwap_anchor_type': 1.0 if anchor_type == 'high' else -1.0,
+            'vwap_distance_pct': float(vwap_distance_pct),
+            'price_above_vwap': price_above_vwap,
+            'vwap_candles_anchored': float(len(anchored)),
+        }
+    
+    def _calculate_liquidity_sweep(self, df):
+        """
+        Detect liquidity sweeps: price briefly exceeds a prior swing high/low (grabbing stop-losses)
+        then snaps back — a strong reversal signal used in Smart Money Concepts.
+        sweep_type: +1 = high swept (bearish signal), -1 = low swept (bullish signal), 0 = none
+        """
+        if len(df) < 10:
+            return {}
+        
+        # Reference window: candles 3-15 back (exclude last 2 to avoid current bar noise)
+        ref_start = max(0, len(df) - 16)
+        ref_end   = max(0, len(df) - 3)
+        reference = df.iloc[ref_start:ref_end]
+        
+        if len(reference) == 0:
+            return {}
+        
+        ref_high = float(reference['high'].max())
+        ref_low  = float(reference['low'].min())
+        
+        sweep_type        = 0.0
+        candles_since_sweep = 0.0
+        sweep_strength    = 0.0
+        
+        check_candles = df.iloc[-5:-1]  # Last 5 closed candles
+        
+        for i, (_, candle) in enumerate(check_candles.iterrows()):
+            ago = len(check_candles) - i
+            
+            # High sweep: wick above ref_high but closed back below → bearish
+            if candle['high'] > ref_high and candle['close'] < ref_high:
+                wick_pct = (candle['high'] - ref_high) / (ref_high + 1e-9) * 100
+                if wick_pct > 0.1:
+                    sweep_type          = 1.0
+                    candles_since_sweep = float(ago)
+                    sweep_strength      = min(wick_pct * 10, 1.0)
+            
+            # Low sweep: wick below ref_low but closed back above → bullish
+            if candle['low'] < ref_low and candle['close'] > ref_low:
+                wick_pct = (ref_low - candle['low']) / (ref_low + 1e-9) * 100
+                if wick_pct > 0.1:
+                    sweep_type          = -1.0
+                    candles_since_sweep = float(ago)
+                    sweep_strength      = min(wick_pct * 10, 1.0)
+        
+        return {
+            'liq_sweep_type': sweep_type,
+            'liq_sweep_candles_ago': candles_since_sweep,
+            'liq_sweep_strength': sweep_strength,
+            'liq_ref_high': float(ref_high),
+            'liq_ref_low': float(ref_low),
+        }
+    
+    def _calculate_volume_profile(self, df):
+        """
+        Calculate Volume Profile over last 100 candles.
+        Point of Control (POC) = price level with most volume.
+        Value Area (VAH/VAL) = range containing 70% of total volume around the POC.
+        Price near POC = high-liquidity zone (strong S/R); outside value area = extended.
+        """
+        if len(df) < 20:
+            return {}
+        lookback = min(100, len(df))
+        recent   = df.tail(lookback)
+        
+        price_high  = float(recent['high'].max())
+        price_low   = float(recent['low'].min())
+        price_range = price_high - price_low
+        if price_range == 0:
+            return {}
+        
+        n_bins  = 50
+        bins    = np.linspace(price_low, price_high, n_bins + 1)
+        bin_vol = np.zeros(n_bins)
+        
+        for _, candle in recent.iterrows():
+            typical = (candle['high'] + candle['low'] + candle['close']) / 3
+            idx = int((typical - price_low) / price_range * (n_bins - 1))
+            idx = max(0, min(n_bins - 1, idx))
+            bin_vol[idx] += candle['volume']
+        
+        poc_idx   = int(np.argmax(bin_vol))
+        poc_price = float((bins[poc_idx] + bins[poc_idx + 1]) / 2)
+        
+        # Expand from POC outward until 70% of volume is covered
+        total_vol   = bin_vol.sum()
+        target_vol  = total_vol * 0.70
+        va_vol      = bin_vol[poc_idx]
+        upper_idx   = poc_idx
+        lower_idx   = poc_idx
+        
+        while va_vol < target_vol:
+            can_up   = upper_idx + 1 < n_bins
+            can_down = lower_idx - 1 >= 0
+            if not can_up and not can_down:
+                break
+            up_vol   = bin_vol[upper_idx + 1] if can_up   else 0
+            down_vol = bin_vol[lower_idx - 1] if can_down else 0
+            if can_up and up_vol >= down_vol:
+                upper_idx += 1
+                va_vol    += bin_vol[upper_idx]
+            elif can_down:
+                lower_idx -= 1
+                va_vol    += bin_vol[lower_idx]
+            else:
+                break
+        
+        vah_price = float((bins[upper_idx] + bins[upper_idx + 1]) / 2)
+        val_price = float((bins[lower_idx] + bins[lower_idx + 1]) / 2)
+        
+        current_price     = float(df.iloc[-1]['close'])
+        poc_distance_pct  = (current_price - poc_price) / (poc_price + 1e-9) * 100
+        in_value_area     = 1.0 if val_price <= current_price <= vah_price else 0.0
+        price_above_poc   = 1.0 if current_price > poc_price else 0.0
+        
+        return {
+            'vp_poc': poc_price,
+            'vp_vah': vah_price,
+            'vp_val': val_price,
+            'vp_poc_distance_pct': float(poc_distance_pct),
+            'vp_in_value_area': in_value_area,
+            'vp_price_above_poc': price_above_poc,
+        }
     
     def get_latest_indicators(self):
         if len(self.df) == 0:
@@ -232,7 +491,20 @@ class TechnicalIndicators:
             'CMF': latest.get('CMF')
         }
         
-        return {k: float(v) if pd.notna(v) else None for k, v in indicators.items()}
+        result = {k: float(v) if pd.notna(v) else None for k, v in indicators.items()}
+        
+        # Merge in the 4 advanced indicators (stored as instance variables)
+        for k, v in self._fib_data.items():
+            if k == 'fib_nearest_label':
+                result[k] = v  # String — keep as-is
+            else:
+                result[k] = float(v) if v is not None else None
+        
+        for data_dict in [self._vwap_data, self._liquidity_sweep_data, self._volume_profile_data]:
+            for k, v in data_dict.items():
+                result[k] = float(v) if v is not None else None
+        
+        return result
     
     def get_trend_signals(self):
         indicators = self.get_latest_indicators()
