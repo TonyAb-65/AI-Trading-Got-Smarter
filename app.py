@@ -23,6 +23,223 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ── Professional Dark Theme CSS ──────────────────────────────────────────────
+st.markdown("""
+<style>
+/* === Base Theme === */
+[data-testid="stAppViewContainer"] {
+    background-color: #0f1117;
+    background-image:
+        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+[data-testid="stHeader"] { background-color: transparent; }
+[data-testid="stSidebar"] {
+    background-color: #0a0c10;
+    border-right: 1px solid #1e293b;
+}
+section[data-testid="stSidebar"] .stMarkdown p,
+section[data-testid="stSidebar"] .stMarkdown li,
+section[data-testid="stSidebar"] label {
+    color: #cbd5e1 !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* === Typography === */
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-weight: 600 !important;
+    color: #f1f5f9 !important;
+    letter-spacing: -0.01em;
+}
+p, span, label, div { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+
+/* === Professional Header Bar === */
+.platform-header {
+    background: linear-gradient(135deg, #0a0c10 0%, #111827 100%);
+    border-bottom: 1px solid #1e293b;
+    padding: 1rem 1.5rem;
+    margin: -1rem -1rem 1.5rem -1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-radius: 0 0 8px 8px;
+}
+.platform-header .platform-name {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    letter-spacing: -0.02em;
+}
+.platform-header .platform-subtitle {
+    font-size: 0.8rem;
+    color: #64748b;
+    margin-top: 2px;
+}
+.platform-header .market-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: #94a3b8;
+}
+.platform-header .status-dot {
+    width: 8px;
+    height: 8px;
+    background: #16a34a;
+    border-radius: 50%;
+    display: inline-block;
+    animation: pulse-dot 2s infinite;
+}
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(22,163,106,0.4); }
+    50% { opacity: 0.8; box-shadow: 0 0 0 6px rgba(22,163,106,0); }
+}
+
+/* === Stat Cards === */
+[data-testid="stMetric"] {
+    background: linear-gradient(135deg, #111827 0%, #0f172a 100%);
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 14px 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+[data-testid="stMetricLabel"] {
+    color: #64748b !important;
+    font-size: 0.75rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+[data-testid="stMetricValue"] {
+    color: #f1f5f9 !important;
+    font-weight: 600 !important;
+    font-variant-numeric: tabular-nums;
+}
+
+/* === Buttons === */
+button[kind="primary"], .stButton > button[kind="primary"],
+[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #1e3a5f 0%, #1e40af 100%) !important;
+    border: 1px solid #2563eb !important;
+    color: #f1f5f9 !important;
+    font-weight: 600 !important;
+    border-radius: 6px !important;
+    transition: all 0.2s ease !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+}
+button[kind="primary"]:hover, .stButton > button[kind="primary"]:hover,
+[data-testid="stBaseButton-primary"]:hover {
+    background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%) !important;
+    border-color: #3b82f6 !important;
+    box-shadow: 0 4px 12px rgba(30,64,175,0.4) !important;
+}
+button[kind="secondary"], .stButton > button[kind="secondary"],
+[data-testid="stBaseButton-secondary"] {
+    background: #1e293b !important;
+    border: 1px solid #334155 !important;
+    color: #cbd5e1 !important;
+    border-radius: 6px !important;
+}
+
+/* === Expanders === */
+[data-testid="stExpander"] {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+}
+
+/* === Tabs === */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0;
+    border-bottom: 1px solid #1e293b;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent;
+    color: #94a3b8;
+    border-bottom: 2px solid transparent;
+    font-weight: 500;
+}
+.stTabs [aria-selected="true"] {
+    color: #f1f5f9 !important;
+    border-bottom: 2px solid #1e40af !important;
+}
+
+/* === Data Tables === */
+[data-testid="stDataFrame"] table {
+    border-collapse: collapse;
+}
+[data-testid="stDataFrame"] th {
+    background: #111827 !important;
+    color: #94a3b8 !important;
+    border-bottom: 2px solid #1e40af !important;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+}
+[data-testid="stDataFrame"] td {
+    border-bottom: 1px solid #1e293b !important;
+    color: #e2e8f0 !important;
+}
+[data-testid="stDataFrame"] tr:nth-child(even) {
+    background: #0f172a !important;
+}
+[data-testid="stDataFrame"] tr:nth-child(odd) {
+    background: #111827 !important;
+}
+
+/* === Alerts and info boxes === */
+[data-testid="stAlert"] {
+    border-radius: 6px;
+    border-left-width: 3px;
+}
+
+/* === Dividers === */
+hr { border-color: #1e293b !important; opacity: 0.6; }
+
+/* === Select boxes and inputs === */
+[data-testid="stSelectbox"] label,
+[data-testid="stNumberInput"] label,
+[data-testid="stTextInput"] label,
+[data-testid="stSlider"] label {
+    color: #94a3b8 !important;
+    font-weight: 500;
+    font-size: 0.85rem;
+}
+
+/* === Chart containers === */
+[data-testid="stPlotlyChart"] {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+/* === Sidebar about section === */
+section[data-testid="stSidebar"] [data-testid="stAlert"] {
+    background: #111827;
+    border: 1px solid #1e293b;
+}
+
+/* === Download button === */
+[data-testid="stDownloadButton"] button {
+    background: #1e293b !important;
+    border: 1px solid #334155 !important;
+    color: #cbd5e1 !important;
+}
+
+/* === Hide default decoration === */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+
+/* === Positive/Negative colors === */
+.positive { color: #16a34a !important; }
+.negative { color: #dc2626 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 @st.cache_resource
 def initialize_database():
     init_db()
@@ -252,7 +469,7 @@ def check_api_keys():
     
     if not twelve_data_key:
         st.error("⚠️ TWELVE_DATA_API_KEY is required for the platform to work!")
-        with st.expander("🔑 How to add your Twelve Data API key"):
+        with st.expander("How to add your Twelve Data API key"):
             st.write("""
             **Twelve Data provides ALL market data (Crypto, Forex, Metals)**
             
@@ -409,19 +626,49 @@ def plot_candlestick_chart(df, indicators_df, symbol, support_levels, resistance
         height=1000,
         showlegend=True,
         xaxis_rangeslider_visible=False,
-        hovermode='x unified'
+        hovermode='x unified',
+        paper_bgcolor='#111827',
+        plot_bgcolor='#0f1117',
+        font=dict(color='#e2e8f0', family='Inter, -apple-system, sans-serif'),
+        legend=dict(bgcolor='rgba(17,24,39,0.8)', bordercolor='#1e293b', borderwidth=1),
     )
-    
+
+    # Apply dark grid to all axes
+    for i in range(1, 5):
+        xaxis_key = f'xaxis{"" if i == 1 else i}'
+        yaxis_key = f'yaxis{"" if i == 1 else i}'
+        fig.update_layout(**{
+            xaxis_key: dict(gridcolor='rgba(255,255,255,0.06)', zerolinecolor='#1e293b'),
+            yaxis_key: dict(gridcolor='rgba(255,255,255,0.06)', zerolinecolor='#1e293b'),
+        })
+
     return fig
 
-st.title("📈 AI-Powered Trading Analysis Platform")
-st.markdown("**Real-time Market Analysis | ML Predictions | Position Monitoring**")
+st.markdown("""
+<div class="platform-header">
+    <div>
+        <div class="platform-name">AI Trading Platform</div>
+        <div class="platform-subtitle">Real-time Market Analysis &middot; ML Predictions &middot; Position Monitoring</div>
+    </div>
+    <div class="market-status">
+        <span class="status-dot"></span> Market Data Live
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 check_api_keys()
 
-menu = st.sidebar.selectbox(
+st.sidebar.markdown("""
+<div style="padding: 0.5rem 0 1rem 0; border-bottom: 1px solid #1e293b; margin-bottom: 1rem;">
+    <div style="font-size: 1.1rem; font-weight: 700; color: #f1f5f9; letter-spacing: -0.01em;">AI Trading</div>
+    <div style="font-size: 0.7rem; color: #64748b; margin-top: 2px;">Intelligent Market Analysis</div>
+</div>
+""", unsafe_allow_html=True)
+
+menu = st.sidebar.radio(
     "Navigation",
-    ["Market Analysis", "Trading Signals", "Position Tracker", "Risk Calculator", "Performance Analytics", "Model Training"]
+    ["Market Analysis", "Trading Signals", "Position Tracker", "Risk Calculator", "Performance Analytics", "Model Training"],
+    label_visibility="collapsed"
 )
 
 # GLOBAL ALERT BANNER - Shows HIGH severity warnings on all tabs
@@ -434,10 +681,10 @@ if global_alerts:
     st.divider()
 
 if menu == "Market Analysis":
-    st.header("📊 Market Analysis Dashboard")
+    st.header("Market Analysis Dashboard")
     
     # ML Learning Explanation
-    with st.expander("🧠 **How ML Learning Improves Predictions**", expanded=False):
+    with st.expander("**How ML Learning Improves Predictions**", expanded=False):
         st.write("""
         **The AI continuously learns from your trading results:**
         
@@ -492,13 +739,13 @@ if menu == "Market Analysis":
             symbol_index = metals_list.index(default_symbol) if default_symbol in metals_list else 0
             symbol = st.selectbox("Select Metal", metals_list, index=symbol_index, key="market_analysis_symbol")
         else:  # custom
-            symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", value=default_symbol, placeholder="BTC/USD", key="market_analysis_symbol").upper()
+            symbol = st.text_input("Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", value=default_symbol, placeholder="BTC/USD", key="market_analysis_symbol").upper()
     
     with col3:
         timeframe_index = ["5m", "15m", "30m", "1H", "4H", "1D"].index(default_timeframe) if default_timeframe in ["5m", "15m", "30m", "1H", "4H", "1D"] else 3
         timeframe = st.selectbox("Timeframe", ["5m", "15m", "30m", "1H", "4H", "1D"], index=timeframe_index, key="market_analysis_timeframe")
     
-    if st.button("Analyze Market", type="primary"):
+    if st.button("Analyze Market", type="primary", use_container_width=False):
         if not symbol or symbol.strip() == "":
             st.error("❌ Please enter a trading pair symbol")
             st.stop()
@@ -757,7 +1004,7 @@ if menu == "Market Analysis":
                     st.write(f"{color} **{indicator}**: {signal}")
         
         with col2:
-            st.subheader("🧠 Smart Money (OBV)")
+            st.subheader("Smart Money (OBV)")
             obv_ctx = trend_context.get('OBV', {})
             obv_slope = obv_ctx.get('slope', 0.0)
             obv_divergence = obv_ctx.get('divergence', 'none')
@@ -782,7 +1029,7 @@ if menu == "Market Analysis":
                 st.caption(f"Slope: {format_large_number(obv_slope)} | {strength_emoji} {strength_label}")
         
         if market_type == "crypto" and whale_data:
-            st.subheader("🐋 Whale & Smart Money Analysis")
+            st.subheader("Whale & Smart Money Analysis")
             whale_movements = whale_data['movements']
             smart_money = whale_data['smart_money']
             volume_profile = whale_data['volume_profile']
@@ -812,7 +1059,7 @@ if menu == "Market Analysis":
         momentum_timing = data.get('momentum_timing', {})
         if momentum_timing and momentum_timing.get('advisory'):
             st.divider()
-            st.subheader("⏱️ Momentum Timing Analysis")
+            st.subheader("Momentum Timing Analysis")
             
             details = momentum_timing.get('details', {})
             momentum_dir = momentum_timing.get('momentum_direction', 'neutral')
@@ -919,7 +1166,7 @@ if menu == "Market Analysis":
                     st.info(target_msg)
                 
                 # Show calculation details in expander
-                with st.expander("📊 Price Target Calculation Details"):
+                with st.expander("Price Target Calculation Details"):
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write(f"**Current Price:** {format_price(current_price)}")
@@ -937,7 +1184,7 @@ if menu == "Market Analysis":
         consolidation = data.get('consolidation', {})
         if consolidation and consolidation.get('consolidation_score', 0) > 30:
             st.divider()
-            st.subheader("📊 Range/Consolidation Analysis")
+            st.subheader("Range / Consolidation Analysis")
             
             score = consolidation.get('consolidation_score', 0)
             is_consolidating = consolidation.get('is_consolidating', False)
@@ -960,7 +1207,7 @@ if menu == "Market Analysis":
             
             # Contributing factors
             if reasons:
-                with st.expander("📋 Contributing Factors"):
+                with st.expander("Contributing Factors"):
                     for reason in reasons:
                         st.write(f"• {reason}")
             
@@ -993,12 +1240,12 @@ if menu == "Market Analysis":
         has_advanced = any(v is not None for v in list(fib_data.values()) + list(vwap_data.values()))
         if has_advanced:
             st.divider()
-            st.subheader("📐 Advanced Indicators")
+            st.subheader("Advanced Indicators")
             col1, col2 = st.columns(2)
             
             with col1:
                 # --- Fibonacci Retracements ---
-                st.write("**📏 Fibonacci Retracements**")
+                st.write("**Fibonacci Retracements**")
                 fib_dir = fib_data.get('fib_direction')
                 fib_dir_label = "Uptrend" if fib_dir and fib_dir > 0 else "Downtrend"
                 fib_dir_icon  = "📈" if fib_dir and fib_dir > 0 else "📉"
@@ -1034,7 +1281,7 @@ if menu == "Market Analysis":
                 
                 st.write("")
                 # --- Anchored VWAP ---
-                st.write("**📊 Anchored VWAP**")
+                st.write("**Anchored VWAP**")
                 vwap = vwap_data.get('anchored_vwap')
                 vwap_dist = vwap_data.get('vwap_distance_pct')
                 above_vwap = vwap_data.get('price_above_vwap')
@@ -1053,7 +1300,7 @@ if menu == "Market Analysis":
             
             with col2:
                 # --- Liquidity Sweep ---
-                st.write("**🌊 Liquidity Sweep**")
+                st.write("**Liquidity Sweep**")
                 sweep_type     = liq_data.get('liq_sweep_type', 0.0) or 0.0
                 sweep_ago      = liq_data.get('liq_sweep_candles_ago', 0.0) or 0.0
                 sweep_strength = liq_data.get('liq_sweep_strength', 0.0) or 0.0
@@ -1076,7 +1323,7 @@ if menu == "Market Analysis":
                 
                 st.write("")
                 # --- Volume Profile ---
-                st.write("**📦 Volume Profile**")
+                st.write("**Volume Profile**")
                 poc = vp_data.get('vp_poc')
                 vah = vp_data.get('vp_vah')
                 val = vp_data.get('vp_val')
@@ -1099,7 +1346,7 @@ if menu == "Market Analysis":
                     st.caption("Insufficient data")
         
         st.divider()
-        st.subheader("🤖 AI Trading Recommendation")
+        st.subheader("AI Trading Recommendation")
         
         # Defensive check for prediction data
         if prediction is None or not isinstance(prediction, dict):
@@ -1140,15 +1387,15 @@ if menu == "Market Analysis":
         
         # Allow manual position tracking even when AI says HOLD
         st.divider()
-        st.write("**💡 Want to track a position?**")
-        
+        st.write("**Track a Position**")
+
         col1, col2, col3 = st.columns([2, 2, 2])
-        
+
         with col1:
             # Default to AI recommendation direction
             ai_signal = prediction.get('signal', 'LONG')
             default_index = 1 if ai_signal == 'SHORT' else 0
-            
+
             manual_direction = st.selectbox(
                 "Trade Direction",
                 ["LONG", "SHORT"],
@@ -1197,7 +1444,7 @@ if menu == "Market Analysis":
         if prediction['signal'] == 'HOLD':
             st.warning("⚠️ AI recommends HOLD - You're entering a manual position")
         
-        if st.button("📊 Track This Position", type="primary", key="take_trade_market"):
+        if st.button("Track This Position", type="primary", key="take_trade_market"):
             if manual_entry <= 0:
                 st.error("❌ Please enter a valid entry price")
             else:
@@ -1225,8 +1472,8 @@ if menu == "Market Analysis":
                     st.error(f"❌ {result['message']}")
 
 elif menu == "Trading Signals":
-    st.header("🎯 Quick Signal Lookup")
-    st.info("💡 Tip: Use 'Market Analysis' for full chart analysis + AI recommendation. This is for quick signal lookups only.")
+    st.header("Quick Signal Lookup")
+    st.info("Use Market Analysis for full chart analysis and AI recommendation. This view is for quick signal lookups only.")
     
     col1, col2 = st.columns(2)
     
@@ -1241,7 +1488,7 @@ elif menu == "Trading Signals":
         elif market_type == "metals":
             symbol = st.selectbox("Select Metal", get_extended_pairs('metals'), key="signal_symbol")
         else:  # custom
-            symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", placeholder="BTC/USD", key="signal_symbol_custom").upper()
+            symbol = st.text_input("Enter Symbol (e.g., AAPL/USD, TSLA/USD, LTC/USD)", placeholder="BTC/USD", key="signal_symbol_custom").upper()
     
     if st.button("Get AI Recommendation", type="primary"):
         if not symbol or symbol.strip() == "":
@@ -1329,15 +1576,15 @@ elif menu == "Trading Signals":
         
         # Allow manual position tracking even when AI says HOLD
         st.divider()
-        st.write("**💡 Want to track a position?**")
-        
+        st.write("**Track a Position**")
+
         col1, col2, col3 = st.columns([2, 2, 2])
-        
+
         with col1:
             # Default to AI recommendation direction
             ai_signal = prediction.get('signal', 'LONG')
             default_index = 1 if ai_signal == 'SHORT' else 0
-            
+
             manual_direction_signal = st.selectbox(
                 "Trade Direction",
                 ["LONG", "SHORT"],
@@ -1386,7 +1633,7 @@ elif menu == "Trading Signals":
         if prediction['signal'] == 'HOLD':
             st.warning("⚠️ AI recommends HOLD - You're entering a manual position")
         
-        if st.button("📊 Track This Position", type="primary", key="take_trade_signal"):
+        if st.button("Track This Position", type="primary", key="take_trade_signal"):
             if manual_entry_signal <= 0:
                 st.error("❌ Please enter a valid entry price")
             else:
@@ -1413,7 +1660,7 @@ elif menu == "Trading Signals":
                     st.error(f"❌ {result['message']}")
 
 elif menu == "Position Tracker":
-    st.header("📍 Active Position Monitor")
+    st.header("Active Position Monitor")
     
     tab1, tab2, tab3 = st.tabs(["Active Positions", "Add Position", "Close Position"])
     
@@ -1431,7 +1678,7 @@ elif menu == "Position Tracker":
                 monitor.check_active_positions()
                 st.session_state['auto_checked_positions'] = True
         
-        if st.button("🔄 Check All Positions"):
+        if st.button("Check All Positions", type="secondary"):
             st.session_state['auto_checked_positions'] = False  # Reset to allow fresh check
             ml_engine = get_ml_engine()
             monitor = PositionMonitor(ml_engine=ml_engine)
@@ -1487,7 +1734,7 @@ elif menu == "Position Tracker":
                     # Show tight monitoring alerts
                     if pos.monitoring_alerts and isinstance(pos.monitoring_alerts, list) and len(pos.monitoring_alerts) > 0:
                         st.divider()
-                        st.write("### 🚨 **Tight Monitoring Alerts**")
+                        st.write("### **Monitoring Alerts**")
                         
                         for alert in pos.monitoring_alerts:
                             severity = alert.get('severity', 'MEDIUM')
@@ -1515,7 +1762,7 @@ elif menu == "Position Tracker":
                         st.info("💡 Position is being monitored automatically every 5 minutes")
                     
                     st.divider()
-                    st.write("**✏️ Adjust Entry Price**")
+                    st.write("**Adjust Entry Price**")
                     st.caption("Update entry price if it differs from your actual live trading platform entry")
                     
                     col_a, col_b = st.columns([2, 1])
@@ -1560,7 +1807,7 @@ elif menu == "Position Tracker":
             elif market_type == "metals":
                 symbol = st.selectbox("Metal", get_extended_pairs('metals'), key="add_symbol")
             else:  # custom
-                symbol = st.text_input("🔍 Enter Symbol (e.g., AAPL/USD, TSLA/USD)", placeholder="BTC/USD", key="add_symbol_custom").upper()
+                symbol = st.text_input("Enter Symbol (e.g., AAPL/USD, TSLA/USD)", placeholder="BTC/USD", key="add_symbol_custom").upper()
             
             trade_type = st.selectbox("Trade Type", ["LONG", "SHORT"])
         
@@ -1687,12 +1934,12 @@ elif menu == "Position Tracker":
             st.info("No active positions to close")
 
 elif menu == "Risk Calculator":
-    st.header("🎯 Position Size Calculator")
+    st.header("Position Size Calculator")
     st.markdown("**Calculate the right position size based on your capital and risk tolerance**")
     
     calc_mode = st.radio(
         "Calculation Mode",
-        ["📊 Risk-Based (Calculate Position)", "💰 Investment-Based (Enter Amount)"],
+        ["Risk-Based (Calculate Position)", "Investment-Based (Enter Amount)"],
         horizontal=True,
         help="Risk-Based: Enter risk % to calculate position. Investment-Based: Enter invested amount directly."
     )
@@ -1722,7 +1969,7 @@ elif menu == "Risk Calculator":
         buying_power = total_capital * leverage
         st.info(f"💪 Buying Power: ${buying_power:,.2f} (Capital × {leverage}x)")
         
-        if calc_mode == "📊 Risk-Based (Calculate Position)":
+        if calc_mode == "Risk-Based (Calculate Position)":
             st.subheader("Risk Settings")
             risk_percentage = st.slider(
                 "Risk Per Trade (%)", 
@@ -1817,7 +2064,7 @@ elif menu == "Risk Calculator":
     distance_to_stop = abs(entry_price - stop_loss_price)
     
     # Calculate based on mode
-    if calc_mode == "📊 Risk-Based (Calculate Position)":
+    if calc_mode == "Risk-Based (Calculate Position)":
         # Risk-Based Mode: Calculate position from risk %
         risk_amount = total_capital * (risk_percentage / 100)
         position_size_units = risk_amount / distance_to_stop if distance_to_stop > 0 else 0
@@ -1866,7 +2113,7 @@ elif menu == "Risk Calculator":
         
         risk_reward_ratio = potential_profit / potential_loss if potential_loss > 0 and potential_profit > 0 else 0
         
-        st.subheader("📊 Calculated Position Size")
+        st.subheader("Calculated Position Size")
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -1905,7 +2152,7 @@ elif menu == "Risk Calculator":
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("💰 Profit & Loss Scenarios")
+            st.subheader("Profit & Loss Scenarios")
             st.write(f"**If Stop Loss is Hit ({format_price(stop_loss_price)}):**")
             st.error(f"❌ Loss: {format_price(potential_loss)} ({actual_risk_pct:.2f}% of capital)")
             
@@ -1919,7 +2166,7 @@ elif menu == "Risk Calculator":
                 st.warning(f"⚠️ This is a LOSS because for {trade_direction} trades, take profit must be {'above' if trade_direction == 'LONG' else 'below'} entry price!")
         
         with col2:
-            st.subheader("🎯 Trade Quality Assessment")
+            st.subheader("Trade Quality Assessment")
             
             if risk_reward_ratio >= 3:
                 st.success("✅ **Excellent** risk/reward ratio (3:1 or better)")
@@ -1951,7 +2198,7 @@ elif menu == "Risk Calculator":
         
         st.divider()
         
-        st.subheader("📝 Summary")
+        st.subheader("Summary")
         margin_required = position_value / leverage
         st.markdown(f"""
         **To execute this {trade_direction} trade at {leverage}x leverage:**
@@ -1965,7 +2212,7 @@ elif menu == "Risk Calculator":
         """)
 
 elif menu == "Performance Analytics":
-    st.header("📊 Performance Analytics")
+    st.header("Performance Analytics")
     
     session = get_session()
     
@@ -1999,7 +2246,7 @@ elif menu == "Performance Analytics":
         
         # Prominent P&L Analytics Section
         st.divider()
-        st.subheader("💰 Profit & Loss Analytics")
+        st.subheader("Profit & Loss Analytics")
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -2038,7 +2285,7 @@ elif menu == "Performance Analytics":
             st.error(f"❌ Your strategy is losing money. Expected loss: ${expected_value:.2f} per trade. Adjust your approach!")
         
         st.divider()
-        st.subheader("📋 Trade History")
+        st.subheader("Trade History")
         
         # Filter controls
         col1, col2, col3, col4 = st.columns(4)
@@ -2056,7 +2303,7 @@ elif menu == "Performance Analytics":
         with col4:
             st.write("")
             st.write("")
-            if st.button("🔄 Reset Filters"):
+            if st.button("Reset Filters"):
                 st.rerun()
         
         # Apply filters
@@ -2094,7 +2341,7 @@ elif menu == "Performance Analytics":
             csv_data = csv_buffer.getvalue()
             
             st.download_button(
-                label="📥 Download All Trades (CSV)",
+                label="Download All Trades (CSV)",
                 data=csv_data,
                 file_name=f"trading_history_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
@@ -2104,7 +2351,7 @@ elif menu == "Performance Analytics":
         st.caption(f"Showing {len(filtered_trades)} of {len(trades)} trades")
         
         # Show/Hide toggle for trade history table
-        show_trade_history = st.checkbox("📋 Show Trade History Details", value=False, key="show_trade_history")
+        show_trade_history = st.checkbox("Show Trade History Details", value=False, key="show_trade_history")
         
         if show_trade_history:
             for trade in filtered_trades:
@@ -2156,7 +2403,7 @@ elif menu == "Performance Analytics":
                     col_del1, col_del2 = st.columns([3, 1])
                     with col_del2:
                         if not st.session_state[f"delete_confirm_{trade.id}"]:
-                            if st.button("🗑️ Delete Trade", key=f"delete_btn_{trade.id}", type="secondary"):
+                            if st.button("Delete Trade", key=f"delete_btn_{trade.id}", type="secondary"):
                                 st.session_state[f"delete_confirm_{trade.id}"] = True
                                 st.rerun()
                         else:
@@ -2189,7 +2436,7 @@ elif menu == "Performance Analytics":
                 st.warning(f"⚠️ You have {total_trades} trades but ML models haven't been trained yet!")
                 st.write("This happens when trades were added before ML was configured.")
                 
-                if st.button("🤖 Train ML Models Now", type="primary"):
+                if st.button("Train ML Models Now", type="primary"):
                     with st.spinner("Training ML models on your existing trades..."):
                         try:
                             from ml_engine import MLTradingEngine
@@ -2227,7 +2474,7 @@ elif menu == "Performance Analytics":
             
             # Manual retrain button with cooldown protection
             st.divider()
-            st.write("**🔄 Manual Retraining**")
+            st.write("**Manual Retraining**")
             st.write("Retrain models manually on all historical trades (automatic retraining happens every 10 trades).")
             
             # Check cooldown (15 minutes)
@@ -2246,7 +2493,7 @@ elif menu == "Performance Analytics":
             with col2:
                 retrain_button_disabled = (minutes_since_last_train < 15 or total_trades < 10)
                 
-                if st.button("🔄 Retrain Now", type="secondary", disabled=retrain_button_disabled):
+                if st.button("Retrain Now", type="secondary", disabled=retrain_button_disabled):
                     with st.spinner("Retraining ML models and backfilling indicator graphs..."):
                         try:
                             from ml_engine import MLTradingEngine
@@ -2265,7 +2512,7 @@ elif menu == "Performance Analytics":
                             st.error(f"❌ Error: {str(e)}")
         
         # Indicator Performance Analysis Dashboard
-        st.subheader("🎯 Indicator Performance Analysis")
+        st.subheader("Indicator Performance Analysis")
         
         from database import IndicatorPerformance
         indicator_perf = session.query(IndicatorPerformance).order_by(IndicatorPerformance.accuracy_rate.desc()).all()
@@ -2310,9 +2557,13 @@ elif menu == "Performance Analytics":
                 title="Indicator Accuracy Comparison",
                 xaxis_title="Indicator",
                 yaxis_title="Accuracy %",
-                yaxis=dict(range=[0, 100]),
+                yaxis=dict(range=[0, 100], gridcolor='rgba(255,255,255,0.06)'),
+                xaxis=dict(gridcolor='rgba(255,255,255,0.06)'),
                 height=400,
-                showlegend=False
+                showlegend=False,
+                paper_bgcolor='#111827',
+                plot_bgcolor='#0f1117',
+                font=dict(color='#e2e8f0', family='Inter, -apple-system, sans-serif'),
             )
             
             # Add 50% reference line
@@ -2338,7 +2589,7 @@ elif menu == "Performance Analytics":
         total_trades = len(trades)
         
         st.divider()
-        st.subheader("🔍 Diagnostic: Indicator Data Status")
+        st.subheader("Diagnostic: Indicator Data Status")
         
         # Only count COMPLETED trades with indicators (same filter as trades list)
         trades_with_indicators = session.query(Trade).filter(
@@ -2380,7 +2631,7 @@ elif menu == "Performance Analytics":
     session.close()
 
 elif menu == "Model Training":
-    st.header("🤖 AI Model Training")
+    st.header("AI Model Training")
     
     st.write("Train the AI models on your completed trades to improve prediction accuracy.")
     
@@ -2410,8 +2661,11 @@ elif menu == "Model Training":
                 st.error("❌ Training failed. Make sure you have enough completed trades.")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### About")
-st.sidebar.info(
-    "AI-powered trading platform with real-time analysis, "
-    "ML predictions, and automated position monitoring."
-)
+st.sidebar.markdown("""
+<div style="padding: 0.75rem; background: #111827; border: 1px solid #1e293b; border-radius: 6px; margin-top: 0.5rem;">
+    <div style="font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">About</div>
+    <div style="font-size: 0.8rem; color: #94a3b8; line-height: 1.5;">
+        AI-powered trading platform with real-time analysis, ML predictions, and automated position monitoring.
+    </div>
+</div>
+""", unsafe_allow_html=True)
