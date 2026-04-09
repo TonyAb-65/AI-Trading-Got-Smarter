@@ -14,6 +14,8 @@ from database import get_session, Trade, ModelPerformance, IndicatorPerformance,
 
 class MLTradingEngine:
     def __init__(self):
+        self.model_dir = "models"
+        os.makedirs(self.model_dir, exist_ok=True)
         self.scaler = StandardScaler()
         self.scaler_fitted = False
         self.feature_columns = []
@@ -989,7 +991,7 @@ class MLTradingEngine:
             
         except Exception as e:
             print(f"⚠️  Error in M2 assessment: {e}")
-            return 1.0  # Fallback to neutral
+            return None  # Fallback: no M2 score available
     
     def train_models(self, min_trades=5):
         """

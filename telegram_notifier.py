@@ -106,10 +106,11 @@ def send_telegram_alert(symbol, position_type, entry_price, current_price, pnl_p
 def clear_alert_cooldown(symbol, position_type):
     """Clear cooldown for a specific position (e.g., when position is closed)"""
     global _alert_cooldowns
-    cooldown_key = f"{symbol}_{position_type}"
-    if cooldown_key in _alert_cooldowns:
-        del _alert_cooldowns[cooldown_key]
-        print(f"🔄 Alert cooldown cleared for {symbol}")
+    keys_to_delete = [k for k in _alert_cooldowns if k.startswith(f"{symbol}_{position_type}_")]
+    for key in keys_to_delete:
+        del _alert_cooldowns[key]
+    if keys_to_delete:
+        print(f"🔄 Alert cooldown cleared for {symbol} ({len(keys_to_delete)} entries)")
 
 def test_telegram_connection():
     """Test if Telegram bot is configured correctly"""
