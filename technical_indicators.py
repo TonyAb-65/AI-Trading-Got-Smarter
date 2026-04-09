@@ -133,11 +133,11 @@ class TechnicalIndicators:
         # ATR Percentile (relative to last 200 candles)
         if len(df) >= 200:
             df['ATR_percentile'] = df['ATR'].rolling(window=200, min_periods=50).apply(
-                lambda x: (x[-1] <= x).sum() / len(x) * 100 if len(x) > 0 else 50.0
+                lambda x: float((x.values[-1] <= x.values).sum()) / len(x) * 100 if len(x) > 0 else 50.0, raw=False
             )
         else:
             df['ATR_percentile'] = df['ATR'].expanding(min_periods=20).apply(
-                lambda x: (x[-1] <= np.array(x)).sum() / len(x) * 100 if len(x) > 0 else 50.0
+                lambda x: float((x.values[-1] <= x.values).sum()) / len(x) * 100 if len(x) > 0 else 50.0, raw=False
             )
         
         # Bollinger Band Width Percentage (normalized volatility)
