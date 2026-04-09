@@ -53,7 +53,36 @@ h1, h2, h3, h4, h5, h6 {
     color: #f1f5f9 !important;
     letter-spacing: -0.01em;
 }
-p, span, label, div { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+p, span, label, div {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #e2e8f0;
+}
+
+/* === Body text readability === */
+[data-testid="stAppViewContainer"] p,
+[data-testid="stAppViewContainer"] li,
+[data-testid="stAppViewContainer"] span,
+[data-testid="stAppViewContainer"] .stMarkdown p,
+[data-testid="stAppViewContainer"] .stMarkdown li,
+[data-testid="stAppViewContainer"] .stMarkdown span,
+[data-testid="stAppViewContainer"] .stText,
+[data-testid="stAppViewContainer"] .stMarkdown {
+    color: #e2e8f0 !important;
+}
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] li,
+[data-testid="stExpander"] span {
+    color: #e2e8f0 !important;
+}
+/* Metric values and labels */
+[data-testid="stMetricDelta"] {
+    opacity: 1 !important;
+}
+/* Alert/info box text */
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] span {
+    color: #e2e8f0 !important;
+}
 
 /* === Professional Header Bar === */
 .platform-header {
@@ -106,7 +135,7 @@ p, span, label, div { font-family: 'Inter', -apple-system, BlinkMacSystemFont, s
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 [data-testid="stMetricLabel"] {
-    color: #64748b !important;
+    color: #94a3b8 !important;
     font-size: 0.75rem !important;
     text-transform: uppercase;
     letter-spacing: 0.05em;
