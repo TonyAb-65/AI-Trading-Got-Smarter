@@ -248,6 +248,12 @@ hr { border-color: #1e293b !important; opacity: 0.6; }
     color: #1a1a1a !important;
 }
 
+div[data-baseweb="select"] ul li,
+div[data-baseweb="option"] {
+    color: black;
+    background: white;
+}
+
 /* === Chart containers === */
 [data-testid="stPlotlyChart"] {
     background: #111827;
