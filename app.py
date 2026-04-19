@@ -238,6 +238,16 @@ hr { border-color: #1e293b !important; opacity: 0.6; }
     font-size: 0.85rem;
 }
 
+/* === Dropdown option text (white dropdown background) === */
+[data-baseweb="select"] [role="option"],
+[data-baseweb="select"] [role="listbox"],
+[data-baseweb="popover"] li,
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="menu"] [role="option"],
+[data-baseweb="select"] ul li {
+    color: #1a1a1a !important;
+}
+
 /* === Chart containers === */
 [data-testid="stPlotlyChart"] {
     background: #111827;
